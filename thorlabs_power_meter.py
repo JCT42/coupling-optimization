@@ -427,7 +427,7 @@ class PowerMeterGUI:
         
         # Variables
         self.device_var = tk.StringVar()
-        self.wavelength_var = tk.DoubleVar(value=633.0)
+        self.wavelength_var = tk.DoubleVar(value=650.0)
         self.current_power_var = tk.StringVar(value="-- W")
         self.status_var = tk.StringVar(value="Ready")
         self.ref_power_var = tk.StringVar(value="-- W")

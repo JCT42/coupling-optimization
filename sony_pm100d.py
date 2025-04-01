@@ -5,10 +5,15 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import sys
 import os
+import platform
+import subprocess
 from typing import Tuple, List, Optional, Callable
 import logging
 import tkinter as tk
 import pyvisa
+
+# Determine if we're on Raspberry Pi
+IS_RASPBERRY_PI = platform.system() == 'Linux' and os.path.exists('/sys/firmware/devicetree/base/model') and 'Raspberry Pi' in open('/sys/firmware/devicetree/base/model').read()
 
 # For SLM display
 try:
@@ -182,6 +187,52 @@ class SLM:
         # Add any other cleanup code for the actual SLM hardware here
         self.connected = False
         logging.info("SLM closed")
+    
+    def save_pattern(self, filename: str, save_npy: bool = True, save_image: bool = True):
+        """
+        Save the current phase mask to a file.
+        
+        Args:
+            filename: Base filename to save to (without extension)
+            save_npy: Whether to save as a NumPy array (.npy)
+            save_image: Whether to save as an image (.png)
+        
+        Returns:
+            List of saved filenames
+        """
+        saved_files = []
+        
+        if not self.connected:
+            logging.warning("SLM not connected. Cannot save pattern.")
+            return saved_files
+        
+        try:
+            # Save as NumPy array
+            if save_npy:
+                npy_filename = f"{filename}.npy"
+                np.save(npy_filename, self.phase_mask)
+                saved_files.append(npy_filename)
+                logging.info(f"Saved phase mask to {npy_filename}")
+            
+            # Save as image
+            if save_image:
+                img_filename = f"{filename}.png"
+                cv2.imwrite(img_filename, self.phase_mask)
+                saved_files.append(img_filename)
+                logging.info(f"Saved phase mask image to {img_filename}")
+                
+                # Also save a colorized version for better visualization
+                colorized = cv2.applyColorMap(self.phase_mask, cv2.COLORMAP_JET)
+                color_img_filename = f"{filename}_colorized.png"
+                cv2.imwrite(color_img_filename, colorized)
+                saved_files.append(color_img_filename)
+                logging.info(f"Saved colorized phase mask to {color_img_filename}")
+            
+            return saved_files
+        
+        except Exception as e:
+            logging.error(f"Error saving phase mask: {e}")
+            return saved_files
 
 
 class PowerMeter:
@@ -403,6 +454,9 @@ class SimulatedAnnealing:
         self.power_history = []
         self.temperature_history = []
         
+        # Flag to control stopping the optimization
+        self.stop_requested = False
+    
     def objective_function(self) -> float:
         """
         Measure the current power as the objective function.
@@ -411,13 +465,13 @@ class SimulatedAnnealing:
         Returns:
             Power reading in watts
         """
-        # Wait a short time for the SLM to settle
-        time.sleep(0.05)
-        
-        # Read the power
         power = self.power_meter.read_power()
-        
         return power
+    
+    def stop(self):
+        """Request to stop the optimization process."""
+        self.stop_requested = True
+        logging.info("Stop requested for optimization")
     
     def run_optimization(self, 
                          initial_mask: Optional[np.ndarray] = None,
@@ -432,35 +486,51 @@ class SimulatedAnnealing:
         Returns:
             Tuple of (best_mask, best_power, power_history)
         """
-        # Initialize with random mask if none provided
+        # Reset the stop flag
+        self.stop_requested = False
+        
+        # Reset tracking variables
+        self.power_history = []
+        self.temperature_history = []
+        self.best_power = -float('inf')
+        self.best_mask = None
+        
+        # Initialize temperature
+        temperature = self.initial_temperature
+        
+        # Create an initial solution if not provided
         if initial_mask is None:
             current_mask = self.slm.get_random_mask()
         else:
             current_mask = initial_mask.copy()
-            
+        
         # Apply the initial mask
         self.slm.apply_phase_mask(current_mask)
         
         # Evaluate the initial solution
         current_power = self.objective_function()
         
-        # Initialize tracking variables
+        # Initialize the best solution
         self.best_mask = current_mask.copy()
         self.best_power = current_power
-        self.power_history = [current_power]
-        self.temperature_history = []
         
-        # Start with the initial temperature
-        temperature = self.initial_temperature
-        
-        iteration = 0
+        # Add the initial power to the history
+        self.power_history.append(current_power)
         
         # Main simulated annealing loop
-        while temperature > self.min_temperature:
+        iteration = 0
+        
+        while temperature > self.min_temperature and not self.stop_requested:
+            # Record the current temperature
             self.temperature_history.append(temperature)
             
             # Multiple iterations at each temperature
             for i in range(self.iterations_per_temp):
+                # Check if stop was requested
+                if self.stop_requested:
+                    logging.info("Optimization stopped by user")
+                    break
+                    
                 iteration += 1
                 
                 # Generate a neighboring solution by perturbing the current mask
@@ -507,6 +577,12 @@ class SimulatedAnnealing:
         
         # Ensure the best mask is applied at the end
         self.slm.apply_phase_mask(self.best_mask)
+        
+        # Log the reason for stopping
+        if self.stop_requested:
+            logging.info("Optimization stopped by user request")
+        else:
+            logging.info("Optimization completed normally (reached minimum temperature)")
         
         return self.best_mask, self.best_power, self.power_history
     

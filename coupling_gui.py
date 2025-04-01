@@ -419,6 +419,12 @@ class CouplingOptimizerGUI:
         if not self.optimization_running:
             return
             
+        logging.info("Stopping optimization...")
+        
+        # Call the stop method on the optimizer
+        if hasattr(self.optimizer, 'stop'):
+            self.optimizer.stop()
+        
         self.optimization_running = False
         
         # Update button states
