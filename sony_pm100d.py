@@ -52,14 +52,11 @@ class SLM:
                 self.connected = True
                 logging.info("SLM initialized in simulation mode")
                 
-                # Create a window for displaying the phase mask
+                # Create a window for displaying the phase mask without UI elements
                 cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-                cv2.moveWindow(self.window_name, self.display_position, 0)
+                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)  # Use normal window instead of fullscreen
                 cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
-                
-                # Remove window decorations but don't use fullscreen to maintain exact dimensions
-                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_AUTOSIZE, cv2.WINDOW_AUTOSIZE)
-                
+                cv2.moveWindow(self.window_name, self.display_position, 0)
                 self.display_window_created = True
                 
                 # Display initial blank phase mask
@@ -73,15 +70,16 @@ class SLM:
             self.connected = True
             logging.info("SLM initialized successfully")
             
-            # Create a window for displaying the phase mask
+            # Create a window for displaying the phase mask without UI elements
             cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-            cv2.moveWindow(self.window_name, self.display_position, 0)
+            cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)  # Use normal window instead of fullscreen
             cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
-            
-            # Remove window decorations but don't use fullscreen to maintain exact dimensions
-            cv2.setWindowProperty(self.window_name, cv2.WND_PROP_AUTOSIZE, cv2.WINDOW_AUTOSIZE)
-            
+            cv2.moveWindow(self.window_name, self.display_position, 0)
             self.display_window_created = True
+            
+            # Remove window border (this works on most platforms)
+            if hasattr(cv2, 'WINDOW_GUI_NORMAL'):  # Check if the attribute exists (OpenCV 4.x)
+                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_AUTOSIZE, cv2.WINDOW_GUI_NORMAL)
             
             # Display initial blank phase mask
             self._update_display()
@@ -96,13 +94,16 @@ class SLM:
             return
             
         try:
-            # Make sure the phase mask has the correct dimensions
+            # Ensure the phase mask exactly fits the window
             if self.phase_mask.shape != self.resolution:
-                logging.warning(f"Phase mask shape {self.phase_mask.shape} doesn't match resolution {self.resolution}. Resizing.")
-                self.phase_mask = self.resize_mask(self.phase_mask)
+                # Resize the phase mask to exactly match the window size
+                display_image = cv2.resize(self.phase_mask, (self.resolution[0], self.resolution[1]), 
+                                          interpolation=cv2.INTER_LINEAR)
+            else:
+                display_image = self.phase_mask
             
             # Display the phase mask
-            cv2.imshow(self.window_name, self.phase_mask)
+            cv2.imshow(self.window_name, display_image)
             cv2.waitKey(1)  # Update the window (1ms wait)
             
             # Account for 60Hz refresh rate (approximately 16.67ms per frame)
