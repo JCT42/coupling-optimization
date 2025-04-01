@@ -188,8 +188,10 @@ class SLM:
             
             if num_displays < 2:
                 display_index = 0
+                logging.info("Only one display detected, using main display")
             else:
                 display_index = 1  # Use second display
+                logging.info(f"Using second display (index {display_index})")
             
             # Get the size of the target display
             target_display_size = pygame.display.get_desktop_sizes()[display_index]
@@ -197,77 +199,170 @@ class SLM:
             
             # Always use 800x600 for the SLM pattern regardless of display size
             slm_size = (800, 600)
+            logging.info(f"Setting SLM window size to: {slm_size}")
             
             # Create window on target display with proper size
             try:
+                logging.info(f"Attempting to create pygame window on display {display_index}")
                 self.slm_window = pygame.display.set_mode(
                     slm_size,  # Always use 800x600
                     pygame.NOFRAME,
                     display=display_index
                 )
-            except pygame.error:
+                logging.info("Successfully created pygame window with display parameter")
+            except pygame.error as e:
+                logging.warning(f"Failed to create window with display parameter: {e}")
                 # Fallback if display parameter fails
-                self.slm_window = pygame.display.set_mode(
-                    slm_size,  # Always use 800x600
-                    pygame.NOFRAME
-                )
+                try:
+                    logging.info("Trying fallback window creation without display parameter")
+                    self.slm_window = pygame.display.set_mode(
+                        slm_size,  # Always use 800x600
+                        pygame.NOFRAME
+                    )
+                    logging.info("Successfully created fallback pygame window")
+                except pygame.error as e2:
+                    logging.error(f"Failed to create fallback window: {e2}")
+                    # One more attempt with different flags
+                    try:
+                        logging.info("Trying second fallback with minimal flags")
+                        self.slm_window = pygame.display.set_mode(slm_size)
+                        logging.info("Successfully created minimal pygame window")
+                    except pygame.error as e3:
+                        logging.error(f"All window creation attempts failed: {e3}")
+                        raise
+                
                 # Try to move window to correct position
                 pygame.display.set_caption("SLM Pattern")
             
             # Create surface with proper depth for grayscale
-            self.pattern_surface = pygame.Surface(slm_size, depth=8)  # Always use 800x600
-            self.pattern_surface.set_palette([(i, i, i) for i in range(256)])
+            try:
+                logging.info("Creating pattern surface")
+                self.pattern_surface = pygame.Surface(slm_size, depth=8)
+                self.pattern_surface.set_palette([(i, i, i) for i in range(256)])
+                logging.info("Successfully created pattern surface")
+            except pygame.error as surf_error:
+                logging.error(f"Failed to create pattern surface: {surf_error}")
+                raise
             
             # Update with initial pattern
+            logging.info("Updating display with initial pattern")
             self._update_pygame_display()
             
             # Event loop
+            logging.info("Starting pygame event loop")
             while self.running:
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
-                        self.running = False
-                        break
-                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                        self.running = False
-                        break
+                try:
+                    for event in pygame.event.get():
+                        if event.type == pygame.QUIT:
+                            logging.info("Received pygame QUIT event")
+                            self.running = False
+                            break
+                        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                            logging.info("Received ESC key event")
+                            self.running = False
+                            break
+                except pygame.error as event_error:
+                    logging.error(f"Error in pygame event handling: {event_error}")
+                    # Try to recover
+                    time.sleep(0.1)
                 
                 # Small sleep to prevent high CPU usage
                 time.sleep(0.01)
                 
         except Exception as e:
-            logging.error(f"Error in pygame display thread: {e}")
+            logging.error(f"Error in pygame display thread: {e}", exc_info=True)
         finally:
             # Cleanup
             try:
+                logging.info("Cleaning up pygame resources")
                 if pygame.display.get_init():
                     pygame.display.quit()
                 pygame.display.init()
+                logging.info("Pygame cleanup completed")
             except Exception as cleanup_error:
                 logging.error(f"Error during pygame cleanup: {cleanup_error}")
     
     def _update_pygame_display(self):
         """Update the pygame display with the current phase mask."""
         if not self.running or self.slm_window is None:
+            logging.warning("Cannot update pygame display: display not running or window is None")
             return
             
         try:
-            # Update surface with pattern data
-            pygame_array = pygame.surfarray.pixels2d(self.pattern_surface)
-            # Transpose if needed to match the expected shape
-            if self.phase_mask.shape[0] == 800 and self.phase_mask.shape[1] == 600:
-                # No need to transpose, shapes match
-                pygame_array[:] = self.phase_mask
-            else:
-                # Transpose to match
-                pygame_array[:] = self.phase_mask.T
-            del pygame_array  # Release the surface lock
+            # Log the current phase mask shape for debugging
+            logging.debug(f"Updating pygame display with phase mask shape: {self.phase_mask.shape}")
+            
+            # Make sure the pattern surface exists and has the right size
+            if not hasattr(self, 'pattern_surface') or self.pattern_surface is None:
+                logging.warning("Pattern surface not initialized, creating new surface")
+                self.pattern_surface = pygame.Surface(self.resolution, depth=8)
+                self.pattern_surface.set_palette([(i, i, i) for i in range(256)])
+            
+            # Ensure phase mask is the right type
+            if not isinstance(self.phase_mask, np.ndarray):
+                logging.error(f"Phase mask is not a numpy array: {type(self.phase_mask)}")
+                return
+                
+            # Ensure phase mask has the right shape and type
+            if self.phase_mask.shape != (800, 600):
+                logging.warning(f"Phase mask has wrong shape: {self.phase_mask.shape}, resizing to (800, 600)")
+                self.phase_mask = cv2.resize(self.phase_mask, (800, 600), interpolation=cv2.INTER_LINEAR)
+                
+            if self.phase_mask.dtype != np.uint8:
+                logging.warning(f"Phase mask has wrong dtype: {self.phase_mask.dtype}, converting to uint8")
+                self.phase_mask = self.phase_mask.astype(np.uint8)
+            
+            # Create a copy of the phase mask to avoid modifying the original
+            phase_mask_copy = self.phase_mask.copy()
+            
+            try:
+                # Update surface with pattern data - use a safer approach
+                pygame_array = pygame.surfarray.pixels2d(self.pattern_surface)
+                
+                # Try direct assignment first
+                try:
+                    pygame_array[:] = phase_mask_copy
+                except ValueError as e:
+                    logging.warning(f"Direct assignment failed: {e}, trying with transpose")
+                    # Try with transpose
+                    try:
+                        pygame_array[:] = phase_mask_copy.T
+                    except ValueError as e2:
+                        logging.error(f"Transpose assignment also failed: {e2}")
+                        # Last resort: manually copy pixel by pixel
+                        logging.warning("Falling back to manual pixel copy")
+                        for x in range(min(800, self.pattern_surface.get_width())):
+                            for y in range(min(600, self.pattern_surface.get_height())):
+                                if x < phase_mask_copy.shape[0] and y < phase_mask_copy.shape[1]:
+                                    pygame_array[x][y] = phase_mask_copy[x, y]
+                
+                # Release the surface lock
+                del pygame_array
+            except Exception as surf_error:
+                logging.error(f"Error updating surface pixels: {surf_error}")
+                # Try an alternative approach if surfarray fails
+                try:
+                    logging.warning("Trying alternative display method with pygame.image")
+                    # Convert numpy array to pygame surface using pygame.image
+                    surf_string = pygame.image.tostring(phase_mask_copy, 'P')
+                    temp_surface = pygame.image.fromstring(surf_string, (800, 600), 'P')
+                    temp_surface.set_palette([(i, i, i) for i in range(256)])
+                    self.pattern_surface = temp_surface
+                except Exception as alt_error:
+                    logging.error(f"Alternative display method also failed: {alt_error}")
+                    return
             
             # Clear window and display pattern
-            self.slm_window.fill((0, 0, 0))
-            self.slm_window.blit(self.pattern_surface, (0, 0))
-            pygame.display.flip()
+            try:
+                self.slm_window.fill((0, 0, 0))
+                self.slm_window.blit(self.pattern_surface, (0, 0))
+                pygame.display.flip()
+                logging.debug("Successfully updated pygame display")
+            except Exception as display_error:
+                logging.error(f"Error in final display update: {display_error}")
+                
         except Exception as e:
-            logging.error(f"Error updating pygame display: {e}")
+            logging.error(f"Error updating pygame display: {e}", exc_info=True)
     
     def _update_display(self):
         """Update the display window with the current phase mask."""
