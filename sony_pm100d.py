@@ -48,12 +48,13 @@ class SLM:
         Initialize the SLM with given resolution.
         
         Args:
-            resolution: Tuple of (width, height) for the SLM display
+            resolution: Tuple of (width, height) for the SLM display, defaults to (800, 600)
             simulation_mode: If True, run in simulation mode without hardware
             display_position: X position to display the pattern window
         """
-        self.resolution = resolution
-        self.phase_mask = np.zeros(resolution, dtype=np.uint8)
+        # Always use 800x600 for the SLM
+        self.resolution = (800, 600)
+        self.phase_mask = np.zeros((800, 600), dtype=np.uint8)  # height x width
         self.connected = False
         self.simulation_mode = simulation_mode
         self.display_position = display_position
@@ -138,7 +139,30 @@ class SLM:
             
             # Get the size of the target display
             target_display_size = pygame.display.get_desktop_sizes()[display_index]
-            logging.info(f"Using display {display_index} with size {target_display_size}")
+            logging.info(f"Target display size: {target_display_size}")
+            
+            # Always use 800x600 for the SLM pattern regardless of display size
+            slm_size = (800, 600)
+            
+            # Create window on target display with proper size
+            try:
+                self.slm_window = pygame.display.set_mode(
+                    slm_size,  # Always use 800x600
+                    pygame.NOFRAME,
+                    display=display_index
+                )
+            except pygame.error:
+                # Fallback if display parameter fails
+                self.slm_window = pygame.display.set_mode(
+                    slm_size,  # Always use 800x600
+                    pygame.NOFRAME
+                )
+                # Try to move window to correct position
+                pygame.display.set_caption("SLM Pattern")
+            
+            # Create surface with proper depth for grayscale
+            self.pattern_surface = pygame.Surface(slm_size, depth=8)  # Always use 800x600
+            self.pattern_surface.set_palette([(i, i, i) for i in range(256)])
             
             # Start the display thread
             self.running = True
@@ -169,25 +193,29 @@ class SLM:
             
             # Get the size of the target display
             target_display_size = pygame.display.get_desktop_sizes()[display_index]
+            logging.info(f"Target display size: {target_display_size}")
+            
+            # Always use 800x600 for the SLM pattern regardless of display size
+            slm_size = (800, 600)
             
             # Create window on target display with proper size
             try:
                 self.slm_window = pygame.display.set_mode(
-                    self.resolution,
+                    slm_size,  # Always use 800x600
                     pygame.NOFRAME,
                     display=display_index
                 )
             except pygame.error:
                 # Fallback if display parameter fails
                 self.slm_window = pygame.display.set_mode(
-                    self.resolution,
+                    slm_size,  # Always use 800x600
                     pygame.NOFRAME
                 )
                 # Try to move window to correct position
                 pygame.display.set_caption("SLM Pattern")
             
             # Create surface with proper depth for grayscale
-            self.pattern_surface = pygame.Surface(self.resolution, depth=8)
+            self.pattern_surface = pygame.Surface(slm_size, depth=8)  # Always use 800x600
             self.pattern_surface.set_palette([(i, i, i) for i in range(256)])
             
             # Update with initial pattern
@@ -267,9 +295,10 @@ class SLM:
             logging.warning("SLM not connected. Cannot apply phase mask.")
             return False
             
-        # Ensure the phase mask has the correct dimensions
-        if phase_mask.shape != self.resolution:
-            phase_mask = self.resize_mask(phase_mask)
+        # Ensure the phase mask has the correct dimensions (800x600)
+        if phase_mask.shape != (600, 800):  # Note: height x width
+            logging.info(f"Resizing phase mask from {phase_mask.shape} to (600, 800)")
+            phase_mask = cv2.resize(phase_mask, (800, 600), interpolation=cv2.INTER_LINEAR)
             
         self.phase_mask = phase_mask
         
@@ -284,21 +313,13 @@ class SLM:
         return True
     
     def resize_mask(self, mask: np.ndarray) -> np.ndarray:
-        """Resize the mask to match SLM resolution."""
-        from scipy.ndimage import zoom
-        
-        # Calculate zoom factors
-        zoom_factors = (self.resolution[0] / mask.shape[0], 
-                        self.resolution[1] / mask.shape[1])
-        
-        # Resize the mask
-        resized_mask = zoom(mask, zoom_factors, order=1)
-        
-        return resized_mask
+        """Resize the mask to match SLM resolution (800x600)."""
+        # Always resize to 800x600 regardless of self.resolution
+        return cv2.resize(mask, (800, 600), interpolation=cv2.INTER_LINEAR)
     
     def get_random_mask(self) -> np.ndarray:
         """Generate a random phase mask."""
-        return np.random.randint(0, 256, self.resolution, dtype=np.uint8)
+        return np.random.randint(0, 256, (800, 600), dtype=np.uint8)
     
     def get_zernike_mask(self, coefficients: List[float]) -> np.ndarray:
         """
