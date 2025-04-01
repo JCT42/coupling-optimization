@@ -11,6 +11,8 @@ from typing import Tuple, List, Optional, Callable
 import logging
 import tkinter as tk
 import pyvisa
+import pygame
+import threading
 
 # Determine if we're on Raspberry Pi
 IS_RASPBERRY_PI = platform.system() == 'Linux' and os.path.exists('/sys/firmware/devicetree/base/model') and 'Raspberry Pi' in open('/sys/firmware/devicetree/base/model').read()
@@ -30,6 +32,13 @@ if IS_RASPBERRY_PI:
     if "DISPLAY" not in os.environ:
         os.environ["DISPLAY"] = ":0"  # Set to default display
     logging.info(f"Running on Raspberry Pi, DISPLAY set to: {os.environ.get('DISPLAY')}")
+    
+    # Set SDL environment variables for display control
+    os.environ['SDL_VIDEO_WINDOW_POS'] = '1280,0'  # Position at main monitor width
+    os.environ['SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS'] = '0'
+
+# Initialize pygame for SLM display
+pygame.init()
 
 # For SLM control - assuming a basic interface
 # You may need to modify this based on your specific SLM model
@@ -50,6 +59,13 @@ class SLM:
         self.display_position = display_position
         self.window_name = "SLM Phase Mask"
         self.display_window_created = False
+        
+        # For pygame display
+        self.slm_window = None
+        self.display_thread = None
+        self.running = False
+        
+        # Initialize the SLM
         self.initialize()
         
     def initialize(self):
@@ -59,8 +75,8 @@ class SLM:
                 self.connected = True
                 logging.info("SLM initialized in simulation mode")
                 
-                # Create a window for displaying the phase mask
-                self._create_display_window()
+                # Create a window for displaying the phase mask using OpenCV
+                self._create_cv2_window()
                 
                 # Display initial blank phase mask
                 self._update_display()
@@ -74,7 +90,12 @@ class SLM:
             logging.info("SLM initialized successfully")
             
             # Create a window for displaying the phase mask
-            self._create_display_window()
+            if IS_RASPBERRY_PI:
+                # On Raspberry Pi, we'll use pygame for more reliable display
+                self._create_pygame_window()
+            else:
+                # On other platforms, use OpenCV
+                self._create_cv2_window()
             
             # Display initial blank phase mask
             self._update_display()
@@ -83,38 +104,136 @@ class SLM:
             logging.error(f"Failed to initialize SLM: {e}")
             self.connected = False
     
-    def _create_display_window(self):
-        """Create a window for displaying the phase mask with platform-specific settings."""
+    def _create_cv2_window(self):
+        """Create a window for displaying the phase mask using OpenCV."""
         try:
-            if IS_RASPBERRY_PI:
-                # On Raspberry Pi, we need to use different flags for window creation
-                cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
-                
-                # On some Pi setups, we need to force the window to be visible
-                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
-                
-                # Resize and position the window
-                cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
-                
-                # On Raspberry Pi, moveWindow might not work as expected
-                # Try to position it anyway
-                try:
-                    cv2.moveWindow(self.window_name, self.display_position, 0)
-                except Exception as e:
-                    logging.warning(f"Could not move window on Raspberry Pi: {e}")
-                
-                logging.info(f"Created display window for Raspberry Pi: {self.window_name}")
+            cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
+            cv2.moveWindow(self.window_name, self.display_position, 0)
+            self.display_window_created = True
+            logging.info(f"Created OpenCV display window: {self.window_name}")
+        except Exception as e:
+            logging.error(f"Error creating OpenCV display window: {e}")
+            self.display_window_created = False
+    
+    def _create_pygame_window(self):
+        """Create a window for displaying the phase mask using pygame."""
+        try:
+            # Set SDL environment variables for display control
+            os.environ['SDL_VIDEO_WINDOW_POS'] = f'{self.display_position},0'
+            
+            # Get display info
+            num_displays = pygame.display.get_num_displays()
+            logging.info(f"Number of displays: {num_displays}")
+            
+            if num_displays < 2:
+                logging.warning("Only one display detected. Using current display.")
+                display_index = 0
             else:
-                # Standard window creation for other platforms
-                cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-                cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
-                cv2.moveWindow(self.window_name, self.display_position, 0)
-                logging.info(f"Created display window: {self.window_name}")
+                display_index = 1  # Use second display
+                
+            for i in range(num_displays):
+                info = pygame.display.get_desktop_sizes()[i]
+                logging.info(f"Display {i}: {info}")
+            
+            # Get the size of the target display
+            target_display_size = pygame.display.get_desktop_sizes()[display_index]
+            logging.info(f"Using display {display_index} with size {target_display_size}")
+            
+            # Start the display thread
+            self.running = True
+            self.display_thread = threading.Thread(target=self._pygame_display_thread)
+            self.display_thread.daemon = True
+            self.display_thread.start()
             
             self.display_window_created = True
+            logging.info("Created pygame display window for SLM")
         except Exception as e:
-            logging.error(f"Error creating display window: {e}")
+            logging.error(f"Error creating pygame display window: {e}")
             self.display_window_created = False
+    
+    def _pygame_display_thread(self):
+        """Thread for handling the pygame display."""
+        try:
+            # Force reinitialize pygame display system
+            pygame.display.quit()
+            pygame.init()
+            
+            # Get display info
+            num_displays = pygame.display.get_num_displays()
+            
+            if num_displays < 2:
+                display_index = 0
+            else:
+                display_index = 1  # Use second display
+            
+            # Get the size of the target display
+            target_display_size = pygame.display.get_desktop_sizes()[display_index]
+            
+            # Create window on target display with proper size
+            try:
+                self.slm_window = pygame.display.set_mode(
+                    self.resolution,
+                    pygame.NOFRAME,
+                    display=display_index
+                )
+            except pygame.error:
+                # Fallback if display parameter fails
+                self.slm_window = pygame.display.set_mode(
+                    self.resolution,
+                    pygame.NOFRAME
+                )
+                # Try to move window to correct position
+                pygame.display.set_caption("SLM Pattern")
+            
+            # Create surface with proper depth for grayscale
+            self.pattern_surface = pygame.Surface(self.resolution, depth=8)
+            self.pattern_surface.set_palette([(i, i, i) for i in range(256)])
+            
+            # Update with initial pattern
+            self._update_pygame_display()
+            
+            # Event loop
+            while self.running:
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        self.running = False
+                        break
+                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                        self.running = False
+                        break
+                
+                # Small sleep to prevent high CPU usage
+                time.sleep(0.01)
+                
+        except Exception as e:
+            logging.error(f"Error in pygame display thread: {e}")
+        finally:
+            # Cleanup
+            try:
+                if pygame.display.get_init():
+                    pygame.display.quit()
+                pygame.display.init()
+            except Exception as cleanup_error:
+                logging.error(f"Error during pygame cleanup: {cleanup_error}")
+    
+    def _update_pygame_display(self):
+        """Update the pygame display with the current phase mask."""
+        if not self.running or self.slm_window is None:
+            return
+            
+        try:
+            # Update surface with pattern data
+            pygame_array = pygame.surfarray.pixels2d(self.pattern_surface)
+            pygame_array[:] = self.phase_mask.T
+            del pygame_array  # Release the surface lock
+            
+            # Clear window and display pattern
+            self.slm_window.fill((0, 0, 0))
+            self.slm_window.blit(self.pattern_surface, (0, 0))
+            pygame.display.flip()
+        except Exception as e:
+            logging.error(f"Error updating pygame display: {e}")
     
     def _update_display(self):
         """Update the display window with the current phase mask."""
@@ -123,21 +242,13 @@ class SLM:
             return
             
         try:
-            # Display the phase mask
-            cv2.imshow(self.window_name, self.phase_mask)
-            
             if IS_RASPBERRY_PI:
-                # On Raspberry Pi, we need a longer waitKey time to ensure the window updates
-                cv2.waitKey(10)  # 10ms wait for Raspberry Pi
-                
-                # Force window to stay on top on Raspberry Pi
-                try:
-                    cv2.setWindowProperty(self.window_name, cv2.WND_PROP_TOPMOST, 1)
-                except Exception as e:
-                    logging.debug(f"Could not set window to stay on top: {e}")
+                # Use pygame for display on Raspberry Pi
+                self._update_pygame_display()
             else:
-                # Standard waitKey for other platforms
-                cv2.waitKey(1)  # 1ms wait
+                # Use OpenCV for display on other platforms
+                cv2.imshow(self.window_name, self.phase_mask)
+                cv2.waitKey(1)  # Update the window (1ms wait)
             
             # Account for 60Hz refresh rate (approximately 16.67ms per frame)
             # Wait for at least one refresh cycle to ensure the display is updated
@@ -225,19 +336,6 @@ class SLM:
         new_mask = np.clip(mask + perturbation, 0, 255).astype(np.uint8)
         
         return new_mask
-        
-    def close(self):
-        """Close the SLM and any open windows."""
-        if self.display_window_created:
-            try:
-                cv2.destroyWindow(self.window_name)
-                self.display_window_created = False
-            except Exception as e:
-                logging.error(f"Error closing display window: {e}")
-                
-        # Add any other cleanup code for the actual SLM hardware here
-        self.connected = False
-        logging.info("SLM closed")
     
     def save_pattern(self, filename: str, save_npy: bool = True, save_image: bool = True):
         """
@@ -284,7 +382,33 @@ class SLM:
         except Exception as e:
             logging.error(f"Error saving phase mask: {e}")
             return saved_files
-
+        
+    def close(self):
+        """Close the SLM and any open windows."""
+        if IS_RASPBERRY_PI:
+            # Stop the pygame display thread
+            self.running = False
+            if self.display_thread and self.display_thread.is_alive():
+                self.display_thread.join(timeout=1.0)
+                
+            # Clean up pygame
+            try:
+                if pygame.display.get_init():
+                    pygame.display.quit()
+            except Exception as e:
+                logging.error(f"Error closing pygame display: {e}")
+        else:
+            # Close OpenCV window
+            if self.display_window_created:
+                try:
+                    cv2.destroyWindow(self.window_name)
+                    self.display_window_created = False
+                except Exception as e:
+                    logging.error(f"Error closing display window: {e}")
+                
+        # Add any other cleanup code for the actual SLM hardware here
+        self.connected = False
+        logging.info("SLM closed")
 
 class PowerMeter:
     def __init__(self, resource_name: Optional[str] = None):

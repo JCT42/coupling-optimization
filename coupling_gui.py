@@ -507,7 +507,7 @@ class CouplingOptimizerGUI:
             self.iterations_per_temp.set(config.get('iterations_per_temp', 10))
             self.min_temperature.set(config.get('min_temperature', 0.1))
             self.perturbation_scale.set(config.get('perturbation_scale', 0.1))
-            self.wavelength.set(config.get('wavelength', 1550))
+            self.wavelength.set(config.get('wavelength', 650))
             self.averaging_count.set(config.get('averaging_count', 10))
             
             logging.info("Configuration loaded from coupling_config.npy")
