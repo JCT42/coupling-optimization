@@ -36,9 +36,18 @@ if IS_RASPBERRY_PI:
     # Set SDL environment variables for display control
     os.environ['SDL_VIDEO_WINDOW_POS'] = '1280,0'  # Position at main monitor width
     os.environ['SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS'] = '0'
+    
+    # Disable OpenGL for pygame on Raspberry Pi to avoid GL context issues
+    os.environ['SDL_VIDEODRIVER'] = 'x11'
 
-# Initialize pygame for SLM display
-pygame.init()
+# Initialize pygame for SLM display - with error handling
+try:
+    pygame.init()
+except Exception as e:
+    logging.error(f"Failed to initialize pygame: {e}")
+    pygame_available = False
+else:
+    pygame_available = True
 
 # For SLM control - assuming a basic interface
 # You may need to modify this based on your specific SLM model
@@ -53,8 +62,8 @@ class SLM:
             display_position: X position to display the pattern window
         """
         # Always use 800x600 for the SLM
-        self.resolution = (800, 600)
-        self.phase_mask = np.zeros((800, 600), dtype=np.uint8)  # width x height
+        self.resolution = (800, 600)  # width=800, height=600
+        self.phase_mask = np.zeros((800, 600), dtype=np.uint8)  # width=800, height=600
         self.connected = False
         self.simulation_mode = simulation_mode
         self.display_position = display_position
@@ -65,6 +74,12 @@ class SLM:
         self.slm_window = None
         self.display_thread = None
         self.running = False
+        
+        # For tkinter display (as a fallback)
+        self.tk_root = None
+        self.tk_canvas = None
+        self.tk_image = None
+        self.using_tkinter = False
         
         # Initialize the SLM
         self.initialize()
@@ -92,8 +107,21 @@ class SLM:
             
             # Create a window for displaying the phase mask
             if IS_RASPBERRY_PI:
-                # On Raspberry Pi, we'll use pygame for more reliable display
-                self._create_pygame_window()
+                # Try multiple display methods in order of preference
+                display_methods = [
+                    self._create_pygame_window,
+                    self._create_tkinter_window,
+                    self._create_cv2_window
+                ]
+                
+                # Try each method until one succeeds
+                for method in display_methods:
+                    try:
+                        method()
+                        if self.display_window_created:
+                            break
+                    except Exception as e:
+                        logging.warning(f"Display method {method.__name__} failed: {e}")
             else:
                 # On other platforms, use OpenCV
                 self._create_cv2_window()
@@ -112,13 +140,53 @@ class SLM:
             cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
             cv2.moveWindow(self.window_name, self.display_position, 0)
             self.display_window_created = True
+            self.using_tkinter = False
             logging.info(f"Created OpenCV display window: {self.window_name}")
         except Exception as e:
             logging.error(f"Error creating OpenCV display window: {e}")
             self.display_window_created = False
     
+    def _create_tkinter_window(self):
+        """Create a window for displaying the phase mask using tkinter (fallback method)."""
+        try:
+            # Create a new Tkinter window
+            self.tk_root = tk.Tk()
+            self.tk_root.title("SLM Pattern (Tkinter)")
+            self.tk_root.geometry(f"{self.resolution[0]}x{self.resolution[1]}+{self.display_position}+0")
+            self.tk_root.overrideredirect(True)  # Borderless window
+            
+            # Create a canvas for displaying the image
+            self.tk_canvas = tk.Canvas(self.tk_root, width=self.resolution[0], height=self.resolution[1])
+            self.tk_canvas.pack()
+            
+            # Create initial blank image
+            from PIL import Image, ImageTk
+            blank_image = Image.fromarray(self.phase_mask)
+            self.tk_image = ImageTk.PhotoImage(image=blank_image)
+            self.tk_canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
+            
+            # Update the window
+            self.tk_root.update()
+            
+            self.display_window_created = True
+            self.using_tkinter = True
+            logging.info("Created Tkinter display window for SLM")
+        except Exception as e:
+            logging.error(f"Error creating Tkinter display window: {e}")
+            self.display_window_created = False
+            if self.tk_root:
+                try:
+                    self.tk_root.destroy()
+                except:
+                    pass
+                self.tk_root = None
+    
     def _create_pygame_window(self):
         """Create a window for displaying the phase mask using pygame."""
+        if not pygame_available:
+            logging.error("Pygame is not available. Cannot create pygame window.")
+            return
+            
         try:
             # Set SDL environment variables for display control
             os.environ['SDL_VIDEO_WINDOW_POS'] = f'{self.display_position},0'
@@ -146,38 +214,19 @@ class SLM:
             
             # Create window on target display with proper size
             try:
-                # First try with hardware acceleration disabled
-                os.environ['SDL_VIDEODRIVER'] = 'software'
                 self.slm_window = pygame.display.set_mode(
                     slm_size,  # Always use 800x600
                     pygame.NOFRAME,
                     display=display_index
                 )
-            except pygame.error as e:
-                logging.warning(f"Failed to create pygame window with software driver: {e}")
-                try:
-                    # Try default driver
-                    os.environ.pop('SDL_VIDEODRIVER', None)
-                    self.slm_window = pygame.display.set_mode(
-                        slm_size,  # Always use 800x600
-                        pygame.NOFRAME,
-                        display=display_index
-                    )
-                except pygame.error as e:
-                    logging.warning(f"Failed to create pygame window with display parameter: {e}")
-                    try:
-                        # Fallback if display parameter fails
-                        self.slm_window = pygame.display.set_mode(
-                            slm_size,  # Always use 800x600
-                            pygame.NOFRAME
-                        )
-                        # Try to move window to correct position
-                        pygame.display.set_caption("SLM Pattern")
-                    except pygame.error as e:
-                        logging.error(f"Failed to create pygame window: {e}")
-                        # Fall back to OpenCV if pygame fails completely
-                        self._create_cv2_window()
-                        return
+            except pygame.error:
+                # Fallback if display parameter fails
+                self.slm_window = pygame.display.set_mode(
+                    slm_size,  # Always use 800x600
+                    pygame.NOFRAME
+                )
+                # Try to move window to correct position
+                pygame.display.set_caption("SLM Pattern")
             
             # Create surface with proper depth for grayscale
             self.pattern_surface = pygame.Surface(slm_size, depth=8)  # Always use 800x600
@@ -190,6 +239,7 @@ class SLM:
             self.display_thread.start()
             
             self.display_window_created = True
+            self.using_tkinter = False
             logging.info("Created pygame display window for SLM")
         except Exception as e:
             logging.error(f"Error creating pygame display window: {e}")
@@ -219,38 +269,19 @@ class SLM:
             
             # Create window on target display with proper size
             try:
-                # First try with hardware acceleration disabled
-                os.environ['SDL_VIDEODRIVER'] = 'software'
                 self.slm_window = pygame.display.set_mode(
                     slm_size,  # Always use 800x600
                     pygame.NOFRAME,
                     display=display_index
                 )
-            except pygame.error as e:
-                logging.warning(f"Failed to create pygame window with software driver: {e}")
-                try:
-                    # Try default driver
-                    os.environ.pop('SDL_VIDEODRIVER', None)
-                    self.slm_window = pygame.display.set_mode(
-                        slm_size,  # Always use 800x600
-                        pygame.NOFRAME,
-                        display=display_index
-                    )
-                except pygame.error as e:
-                    logging.warning(f"Failed to create pygame window with display parameter: {e}")
-                    try:
-                        # Fallback if display parameter fails
-                        self.slm_window = pygame.display.set_mode(
-                            slm_size,  # Always use 800x600
-                            pygame.NOFRAME
-                        )
-                        # Try to move window to correct position
-                        pygame.display.set_caption("SLM Pattern")
-                    except pygame.error as e:
-                        logging.error(f"Failed to create pygame window: {e}")
-                        # Fall back to OpenCV if pygame fails completely
-                        self._create_cv2_window()
-                        return
+            except pygame.error:
+                # Fallback if display parameter fails
+                self.slm_window = pygame.display.set_mode(
+                    slm_size,  # Always use 800x600
+                    pygame.NOFRAME
+                )
+                # Try to move window to correct position
+                pygame.display.set_caption("SLM Pattern")
             
             # Create surface with proper depth for grayscale
             self.pattern_surface = pygame.Surface(slm_size, depth=8)  # Always use 800x600
@@ -274,7 +305,8 @@ class SLM:
                 
         except Exception as e:
             logging.error(f"Error in pygame display thread: {e}")
-            # Fall back to OpenCV if pygame fails
+            # Try to fall back to another display method
+            self.display_window_created = False
             self._create_cv2_window()
         finally:
             # Cleanup
@@ -291,35 +323,51 @@ class SLM:
             return
             
         try:
-            # Update surface with pattern data - ensure correct shape handling
-            # The phase_mask should be (800, 600) and we need to transpose it for pygame
+            # Update surface with pattern data
             pygame_array = pygame.surfarray.pixels2d(self.pattern_surface)
-            
-            # Make sure shapes are compatible
-            if pygame_array.shape != (800, 600) or self.phase_mask.shape != (800, 600):
-                logging.warning(f"Shape mismatch: pygame_array={pygame_array.shape}, phase_mask={self.phase_mask.shape}")
-                # Resize phase_mask if needed
-                if self.phase_mask.shape != (800, 600):
-                    self.phase_mask = cv2.resize(self.phase_mask, (800, 600), interpolation=cv2.INTER_LINEAR)
-            
-            # Copy data with explicit shape handling
-            pygame_array[:] = self.phase_mask.T
+            # Transpose if needed to match the expected shape
+            if self.phase_mask.shape[0] == 800 and self.phase_mask.shape[1] == 600:
+                # No need to transpose, shapes match
+                pygame_array[:] = self.phase_mask
+            else:
+                # Transpose to match
+                pygame_array[:] = self.phase_mask.T
             del pygame_array  # Release the surface lock
             
             # Clear window and display pattern
             self.slm_window.fill((0, 0, 0))
             self.slm_window.blit(self.pattern_surface, (0, 0))
             pygame.display.flip()
-        except pygame.error as e:
-            logging.error(f"Pygame error updating display: {e}")
-            # Try to reinitialize pygame if there was an error
-            try:
-                pygame.display.quit()
-                pygame.display.init()
-            except:
-                pass
         except Exception as e:
             logging.error(f"Error updating pygame display: {e}")
+            # If pygame display fails, try to switch to another method
+            self.display_window_created = False
+            if not self.using_tkinter:
+                self._create_tkinter_window()
+                if self.display_window_created:
+                    self._update_tkinter_display()
+    
+    def _update_tkinter_display(self):
+        """Update the tkinter display with the current phase mask."""
+        if not self.using_tkinter or self.tk_root is None or self.tk_canvas is None:
+            return
+            
+        try:
+            # Convert numpy array to PIL Image
+            from PIL import Image, ImageTk
+            image = Image.fromarray(self.phase_mask)
+            
+            # Update the PhotoImage
+            self.tk_image = ImageTk.PhotoImage(image=image)
+            
+            # Update the canvas
+            self.tk_canvas.delete("all")
+            self.tk_canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
+            
+            # Update the window
+            self.tk_root.update()
+        except Exception as e:
+            logging.error(f"Error updating tkinter display: {e}")
     
     def _update_display(self):
         """Update the display window with the current phase mask."""
@@ -328,14 +376,12 @@ class SLM:
             return
             
         try:
-            if IS_RASPBERRY_PI:
+            if self.using_tkinter:
+                # Use tkinter for display
+                self._update_tkinter_display()
+            elif IS_RASPBERRY_PI and pygame_available and self.running:
                 # Use pygame for display on Raspberry Pi
-                if hasattr(self, 'slm_window') and self.slm_window is not None:
-                    self._update_pygame_display()
-                else:
-                    # Fall back to OpenCV if pygame window creation failed
-                    cv2.imshow(self.window_name, self.phase_mask)
-                    cv2.waitKey(1)  # Update the window (1ms wait)
+                self._update_pygame_display()
             else:
                 # Use OpenCV for display on other platforms
                 cv2.imshow(self.window_name, self.phase_mask)
@@ -346,6 +392,9 @@ class SLM:
             time.sleep(0.02)  # 20ms, slightly longer than one refresh cycle at 60Hz
         except Exception as e:
             logging.error(f"Error updating display: {e}")
+            # If current display method fails, try to switch to another method
+            if not self.using_tkinter and not IS_RASPBERRY_PI:
+                self._create_tkinter_window()
     
     def apply_phase_mask(self, phase_mask: np.ndarray):
         """
@@ -359,7 +408,7 @@ class SLM:
             return False
             
         # Ensure the phase mask has the correct dimensions (800x600)
-        if phase_mask.shape != (800, 600):  # width x height
+        if phase_mask.shape != (800, 600):  # width=800, height=600
             logging.info(f"Resizing phase mask from {phase_mask.shape} to (800, 600)")
             phase_mask = cv2.resize(phase_mask, (800, 600), interpolation=cv2.INTER_LINEAR)
             
@@ -382,7 +431,7 @@ class SLM:
     
     def get_random_mask(self) -> np.ndarray:
         """Generate a random phase mask."""
-        return np.random.randint(0, 256, (800, 600), dtype=np.uint8)
+        return np.random.randint(0, 256, (800, 600), dtype=np.uint8)  # width=800, height=600
     
     def get_zernike_mask(self, coefficients: List[float]) -> np.ndarray:
         """
@@ -469,7 +518,15 @@ class SLM:
         
     def close(self):
         """Close the SLM and any open windows."""
-        if IS_RASPBERRY_PI:
+        if self.using_tkinter:
+            # Close tkinter window
+            if self.tk_root:
+                try:
+                    self.tk_root.destroy()
+                    self.tk_root = None
+                except Exception as e:
+                    logging.error(f"Error closing tkinter display: {e}")
+        elif IS_RASPBERRY_PI and pygame_available:
             # Stop the pygame display thread
             self.running = False
             if self.display_thread and self.display_thread.is_alive():
