@@ -70,9 +70,27 @@ class SLM:
             logging.info("SLM initialized successfully")
             
             # Create a window for displaying the phase mask
-            cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-            cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
-            cv2.moveWindow(self.window_name, self.display_position, 0)
+            # Handle Raspberry Pi differently
+            if IS_RASPBERRY_PI:
+                # On Raspberry Pi, create a fullscreen frameless window
+                logging.info("Running on Raspberry Pi, creating frameless window")
+                cv2.namedWindow(self.window_name, cv2.WND_PROP_FULLSCREEN)
+                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+                
+                # Make sure the window is on top
+                try:
+                    # Try to use xdotool to ensure window is on top and borderless
+                    # This might require installing xdotool: sudo apt-get install xdotool
+                    time.sleep(1)  # Give time for window to appear
+                    subprocess.run(["xdotool", "search", "--name", self.window_name, "windowactivate"], check=False)
+                except Exception as e:
+                    logging.warning(f"Could not use xdotool to activate window: {e}")
+            else:
+                # On Windows, create a normal window
+                cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
+                cv2.moveWindow(self.window_name, self.display_position, 0)
+            
             self.display_window_created = True
             
             # Display initial blank phase mask
@@ -90,11 +108,16 @@ class SLM:
         try:
             # Display the phase mask
             cv2.imshow(self.window_name, self.phase_mask)
-            cv2.waitKey(1)  # Update the window (1ms wait)
             
-            # Account for 60Hz refresh rate (approximately 16.67ms per frame)
-            # Wait for at least one refresh cycle to ensure the display is updated
-            time.sleep(0.02)  # 20ms, slightly longer than one refresh cycle at 60Hz
+            # Different handling for Raspberry Pi vs Windows
+            if IS_RASPBERRY_PI:
+                # On Raspberry Pi, we need a longer wait to ensure proper display
+                cv2.waitKey(5)  # 5ms wait
+                time.sleep(0.03)  # 30ms, slightly longer for Raspberry Pi
+            else:
+                # On Windows, standard handling
+                cv2.waitKey(1)  # 1ms wait
+                time.sleep(0.02)  # 20ms for 60Hz refresh
         except Exception as e:
             logging.error(f"Error updating display: {e}")
     
