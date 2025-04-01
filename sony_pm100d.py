@@ -295,8 +295,12 @@ class SLM:
             # Make sure the pattern surface exists and has the right size
             if not hasattr(self, 'pattern_surface') or self.pattern_surface is None:
                 logging.warning("Pattern surface not initialized, creating new surface")
-                self.pattern_surface = pygame.Surface(self.resolution, depth=8)
-                self.pattern_surface.set_palette([(i, i, i) for i in range(256)])
+                try:
+                    self.pattern_surface = pygame.Surface((800, 600), depth=8)
+                    self.pattern_surface.set_palette([(i, i, i) for i in range(256)])
+                except Exception as e:
+                    logging.error(f"Failed to create pattern surface: {e}")
+                    return
             
             # Ensure phase mask is the right type
             if not isinstance(self.phase_mask, np.ndarray):
@@ -306,15 +310,29 @@ class SLM:
             # Ensure phase mask has the right shape and type
             if self.phase_mask.shape != (800, 600):
                 logging.warning(f"Phase mask has wrong shape: {self.phase_mask.shape}, resizing to (800, 600)")
-                self.phase_mask = cv2.resize(self.phase_mask, (800, 600), interpolation=cv2.INTER_LINEAR)
+                try:
+                    self.phase_mask = cv2.resize(self.phase_mask, (800, 600), interpolation=cv2.INTER_LINEAR)
+                except Exception as e:
+                    logging.error(f"Failed to resize phase mask: {e}")
+                    return
                 
             if self.phase_mask.dtype != np.uint8:
                 logging.warning(f"Phase mask has wrong dtype: {self.phase_mask.dtype}, converting to uint8")
-                self.phase_mask = self.phase_mask.astype(np.uint8)
+                try:
+                    self.phase_mask = self.phase_mask.astype(np.uint8)
+                except Exception as e:
+                    logging.error(f"Failed to convert phase mask to uint8: {e}")
+                    return
             
             # Create a copy of the phase mask to avoid modifying the original
-            phase_mask_copy = self.phase_mask.copy()
+            try:
+                phase_mask_copy = self.phase_mask.copy()
+            except Exception as e:
+                logging.error(f"Failed to copy phase mask: {e}")
+                phase_mask_copy = self.phase_mask
             
+            # APPROACH 1: Try using pygame.surfarray
+            success = False
             try:
                 # Update surface with pattern data - use a safer approach
                 pygame_array = pygame.surfarray.pixels2d(self.pattern_surface)
@@ -322,25 +340,34 @@ class SLM:
                 # Try direct assignment first
                 try:
                     pygame_array[:] = phase_mask_copy
+                    success = True
                 except ValueError as e:
                     logging.warning(f"Direct assignment failed: {e}, trying with transpose")
                     # Try with transpose
                     try:
                         pygame_array[:] = phase_mask_copy.T
+                        success = True
                     except ValueError as e2:
                         logging.error(f"Transpose assignment also failed: {e2}")
                         # Last resort: manually copy pixel by pixel
-                        logging.warning("Falling back to manual pixel copy")
-                        for x in range(min(800, self.pattern_surface.get_width())):
-                            for y in range(min(600, self.pattern_surface.get_height())):
-                                if x < phase_mask_copy.shape[0] and y < phase_mask_copy.shape[1]:
-                                    pygame_array[x][y] = phase_mask_copy[x, y]
+                        try:
+                            logging.warning("Falling back to manual pixel copy")
+                            for x in range(min(800, self.pattern_surface.get_width())):
+                                for y in range(min(600, self.pattern_surface.get_height())):
+                                    if x < phase_mask_copy.shape[0] and y < phase_mask_copy.shape[1]:
+                                        pygame_array[x][y] = phase_mask_copy[x, y]
+                            success = True
+                        except Exception as e3:
+                            logging.error(f"Manual pixel copy failed: {e3}")
                 
                 # Release the surface lock
                 del pygame_array
             except Exception as surf_error:
                 logging.error(f"Error updating surface pixels: {surf_error}")
-                # Try an alternative approach if surfarray fails
+                success = False
+            
+            # APPROACH 2: If approach 1 failed, try using pygame.image
+            if not success:
                 try:
                     logging.warning("Trying alternative display method with pygame.image")
                     # Convert numpy array to pygame surface using pygame.image
@@ -348,16 +375,73 @@ class SLM:
                     temp_surface = pygame.image.fromstring(surf_string, (800, 600), 'P')
                     temp_surface.set_palette([(i, i, i) for i in range(256)])
                     self.pattern_surface = temp_surface
+                    success = True
                 except Exception as alt_error:
                     logging.error(f"Alternative display method also failed: {alt_error}")
-                    return
+                    success = False
+            
+            # APPROACH 3: If all else fails, try creating a new surface and drawing directly
+            if not success:
+                try:
+                    logging.warning("Trying last resort display method with direct drawing")
+                    # Create a new surface
+                    new_surface = pygame.Surface((800, 600))
+                    
+                    # Draw directly to the surface pixel by pixel
+                    for y in range(600):
+                        for x in range(800):
+                            if x < phase_mask_copy.shape[0] and y < phase_mask_copy.shape[1]:
+                                gray_value = phase_mask_copy[x, y]
+                                new_surface.set_at((x, y), (gray_value, gray_value, gray_value))
+                    
+                    self.pattern_surface = new_surface
+                    success = True
+                except Exception as direct_error:
+                    logging.error(f"Direct drawing method also failed: {direct_error}")
+                    return  # Give up at this point
             
             # Clear window and display pattern
             try:
-                self.slm_window.fill((0, 0, 0))
-                self.slm_window.blit(self.pattern_surface, (0, 0))
-                pygame.display.flip()
-                logging.debug("Successfully updated pygame display")
+                # Check if window still exists and is initialized
+                if not pygame.display.get_init() or self.slm_window is None:
+                    logging.error("Pygame display not initialized or window is None")
+                    return
+                    
+                # Try to fill the window with black
+                try:
+                    self.slm_window.fill((0, 0, 0))
+                except Exception as fill_error:
+                    logging.error(f"Error filling window: {fill_error}")
+                
+                # Try to blit the pattern surface
+                try:
+                    self.slm_window.blit(self.pattern_surface, (0, 0))
+                except Exception as blit_error:
+                    logging.error(f"Error blitting surface: {blit_error}")
+                    # Try one more approach - create a new window
+                    try:
+                        logging.warning("Recreating window as last resort")
+                        pygame.display.quit()
+                        pygame.display.init()
+                        self.slm_window = pygame.display.set_mode((800, 600))
+                        self.slm_window.blit(self.pattern_surface, (0, 0))
+                    except Exception as recreate_error:
+                        logging.error(f"Window recreation failed: {recreate_error}")
+                        return
+                
+                # Try to update the display
+                try:
+                    pygame.display.flip()
+                    logging.debug("Successfully updated pygame display")
+                except Exception as flip_error:
+                    logging.error(f"Error flipping display: {flip_error}")
+                    # Try alternative update method
+                    try:
+                        pygame.display.update()
+                        logging.debug("Successfully updated pygame display using update() method")
+                    except Exception as update_error:
+                        logging.error(f"Both flip() and update() methods failed: {update_error}")
+                        return
             except Exception as display_error:
                 logging.error(f"Error in final display update: {display_error}")
                 
