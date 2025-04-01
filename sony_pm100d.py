@@ -52,8 +52,9 @@ class SLM:
                 self.connected = True
                 logging.info("SLM initialized in simulation mode")
                 
-                # Create a window for displaying the phase mask
+                # Create a window for displaying the phase mask without UI elements
                 cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
                 cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
                 cv2.moveWindow(self.window_name, self.display_position, 0)
                 self.display_window_created = True
@@ -69,8 +70,9 @@ class SLM:
             self.connected = True
             logging.info("SLM initialized successfully")
             
-            # Create a window for displaying the phase mask
+            # Create a window for displaying the phase mask without UI elements
             cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+            cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
             cv2.moveWindow(self.window_name, self.display_position, 0)
             self.display_window_created = True
@@ -88,13 +90,8 @@ class SLM:
             return
             
         try:
-            # Make sure the phase mask is properly formatted for display
-            # OpenCV expects a valid image format, ensure it's the right type and range
+            # Display the phase mask - ensure it fills the entire window
             display_image = self.phase_mask.copy()
-            
-            # Ensure the image is in the correct format for display
-            if display_image.dtype != np.uint8:
-                display_image = display_image.astype(np.uint8)
             
             # Display the phase mask
             cv2.imshow(self.window_name, display_image)
@@ -105,7 +102,6 @@ class SLM:
             time.sleep(0.02)  # 20ms, slightly longer than one refresh cycle at 60Hz
         except Exception as e:
             logging.error(f"Error updating display: {e}")
-            logging.error(f"Phase mask shape: {self.phase_mask.shape}, dtype: {self.phase_mask.dtype}")
     
     def apply_phase_mask(self, phase_mask: np.ndarray):
         """
