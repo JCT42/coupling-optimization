@@ -24,6 +24,13 @@ except ImportError:
     pip.main(['install', 'opencv-python'])
     import cv2
 
+# For Raspberry Pi, we may need to set the display environment variable
+if IS_RASPBERRY_PI:
+    # Check if DISPLAY is set
+    if "DISPLAY" not in os.environ:
+        os.environ["DISPLAY"] = ":0"  # Set to default display
+    logging.info(f"Running on Raspberry Pi, DISPLAY set to: {os.environ.get('DISPLAY')}")
+
 # For SLM control - assuming a basic interface
 # You may need to modify this based on your specific SLM model
 class SLM:
@@ -53,10 +60,7 @@ class SLM:
                 logging.info("SLM initialized in simulation mode")
                 
                 # Create a window for displaying the phase mask
-                cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-                cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
-                cv2.moveWindow(self.window_name, self.display_position, 0)
-                self.display_window_created = True
+                self._create_display_window()
                 
                 # Display initial blank phase mask
                 self._update_display()
@@ -70,10 +74,7 @@ class SLM:
             logging.info("SLM initialized successfully")
             
             # Create a window for displaying the phase mask
-            cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-            cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
-            cv2.moveWindow(self.window_name, self.display_position, 0)
-            self.display_window_created = True
+            self._create_display_window()
             
             # Display initial blank phase mask
             self._update_display()
@@ -82,15 +83,61 @@ class SLM:
             logging.error(f"Failed to initialize SLM: {e}")
             self.connected = False
     
+    def _create_display_window(self):
+        """Create a window for displaying the phase mask with platform-specific settings."""
+        try:
+            if IS_RASPBERRY_PI:
+                # On Raspberry Pi, we need to use different flags for window creation
+                cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+                
+                # On some Pi setups, we need to force the window to be visible
+                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
+                
+                # Resize and position the window
+                cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
+                
+                # On Raspberry Pi, moveWindow might not work as expected
+                # Try to position it anyway
+                try:
+                    cv2.moveWindow(self.window_name, self.display_position, 0)
+                except Exception as e:
+                    logging.warning(f"Could not move window on Raspberry Pi: {e}")
+                
+                logging.info(f"Created display window for Raspberry Pi: {self.window_name}")
+            else:
+                # Standard window creation for other platforms
+                cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
+                cv2.moveWindow(self.window_name, self.display_position, 0)
+                logging.info(f"Created display window: {self.window_name}")
+            
+            self.display_window_created = True
+        except Exception as e:
+            logging.error(f"Error creating display window: {e}")
+            self.display_window_created = False
+    
     def _update_display(self):
         """Update the display window with the current phase mask."""
         if not self.display_window_created:
+            logging.warning("Display window not created. Cannot update display.")
             return
             
         try:
             # Display the phase mask
             cv2.imshow(self.window_name, self.phase_mask)
-            cv2.waitKey(1)  # Update the window (1ms wait)
+            
+            if IS_RASPBERRY_PI:
+                # On Raspberry Pi, we need a longer waitKey time to ensure the window updates
+                cv2.waitKey(10)  # 10ms wait for Raspberry Pi
+                
+                # Force window to stay on top on Raspberry Pi
+                try:
+                    cv2.setWindowProperty(self.window_name, cv2.WND_PROP_TOPMOST, 1)
+                except Exception as e:
+                    logging.debug(f"Could not set window to stay on top: {e}")
+            else:
+                # Standard waitKey for other platforms
+                cv2.waitKey(1)  # 1ms wait
             
             # Account for 60Hz refresh rate (approximately 16.67ms per frame)
             # Wait for at least one refresh cycle to ensure the display is updated
