@@ -91,6 +91,10 @@ class SLM:
             # Display the phase mask
             cv2.imshow(self.window_name, self.phase_mask)
             cv2.waitKey(1)  # Update the window (1ms wait)
+            
+            # Account for 60Hz refresh rate (approximately 16.67ms per frame)
+            # Wait for at least one refresh cycle to ensure the display is updated
+            time.sleep(0.02)  # 20ms, slightly longer than one refresh cycle at 60Hz
         except Exception as e:
             logging.error(f"Error updating display: {e}")
     
