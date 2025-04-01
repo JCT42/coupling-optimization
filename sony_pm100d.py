@@ -11,8 +11,8 @@ from typing import Tuple, List, Optional, Callable
 import logging
 import tkinter as tk
 import pyvisa
-import pygame
 import threading
+import cv2
 
 # Determine if we're on Raspberry Pi
 IS_RASPBERRY_PI = platform.system() == 'Linux' and os.path.exists('/sys/firmware/devicetree/base/model') and 'Raspberry Pi' in open('/sys/firmware/devicetree/base/model').read()
@@ -32,22 +32,6 @@ if IS_RASPBERRY_PI:
     if "DISPLAY" not in os.environ:
         os.environ["DISPLAY"] = ":0"  # Set to default display
     logging.info(f"Running on Raspberry Pi, DISPLAY set to: {os.environ.get('DISPLAY')}")
-    
-    # Set SDL environment variables for display control
-    os.environ['SDL_VIDEO_WINDOW_POS'] = '1280,0'  # Position at main monitor width
-    os.environ['SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS'] = '0'
-    
-    # Disable OpenGL for pygame on Raspberry Pi to avoid GL context issues
-    os.environ['SDL_VIDEODRIVER'] = 'x11'
-
-# Initialize pygame for SLM display - with error handling
-try:
-    pygame.init()
-except Exception as e:
-    logging.error(f"Failed to initialize pygame: {e}")
-    pygame_available = False
-else:
-    pygame_available = True
 
 # For SLM control - assuming a basic interface
 # You may need to modify this based on your specific SLM model
@@ -70,17 +54,6 @@ class SLM:
         self.window_name = "SLM Phase Mask"
         self.display_window_created = False
         
-        # For pygame display
-        self.slm_window = None
-        self.display_thread = None
-        self.running = False
-        
-        # For tkinter display (as a fallback)
-        self.tk_root = None
-        self.tk_canvas = None
-        self.tk_image = None
-        self.using_tkinter = False
-        
         # Initialize the SLM
         self.initialize()
         
@@ -92,7 +65,7 @@ class SLM:
                 logging.info("SLM initialized in simulation mode")
                 
                 # Create a window for displaying the phase mask using OpenCV
-                self._create_cv2_window()
+                self._create_display_window()
                 
                 # Display initial blank phase mask
                 self._update_display()
@@ -106,25 +79,7 @@ class SLM:
             logging.info("SLM initialized successfully")
             
             # Create a window for displaying the phase mask
-            if IS_RASPBERRY_PI:
-                # Try multiple display methods in order of preference
-                display_methods = [
-                    self._create_pygame_window,
-                    self._create_tkinter_window,
-                    self._create_cv2_window
-                ]
-                
-                # Try each method until one succeeds
-                for method in display_methods:
-                    try:
-                        method()
-                        if self.display_window_created:
-                            break
-                    except Exception as e:
-                        logging.warning(f"Display method {method.__name__} failed: {e}")
-            else:
-                # On other platforms, use OpenCV
-                self._create_cv2_window()
+            self._create_display_window()
             
             # Display initial blank phase mask
             self._update_display()
@@ -133,241 +88,30 @@ class SLM:
             logging.error(f"Failed to initialize SLM: {e}")
             self.connected = False
     
-    def _create_cv2_window(self):
-        """Create a window for displaying the phase mask using OpenCV."""
+    def _create_display_window(self):
+        """Create a window for displaying the phase mask."""
         try:
+            # Create a named window with normal size
             cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+            
+            # Resize the window to match the SLM resolution
             cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
+            
+            # Move the window to the specified position
             cv2.moveWindow(self.window_name, self.display_position, 0)
-            self.display_window_created = True
-            self.using_tkinter = False
-            logging.info(f"Created OpenCV display window: {self.window_name}")
-        except Exception as e:
-            logging.error(f"Error creating OpenCV display window: {e}")
-            self.display_window_created = False
-    
-    def _create_tkinter_window(self):
-        """Create a window for displaying the phase mask using tkinter (fallback method)."""
-        try:
-            # Create a new Tkinter window
-            self.tk_root = tk.Tk()
-            self.tk_root.title("SLM Pattern (Tkinter)")
-            self.tk_root.geometry(f"{self.resolution[0]}x{self.resolution[1]}+{self.display_position}+0")
-            self.tk_root.overrideredirect(True)  # Borderless window
             
-            # Create a canvas for displaying the image
-            self.tk_canvas = tk.Canvas(self.tk_root, width=self.resolution[0], height=self.resolution[1])
-            self.tk_canvas.pack()
-            
-            # Create initial blank image
-            from PIL import Image, ImageTk
-            blank_image = Image.fromarray(self.phase_mask)
-            self.tk_image = ImageTk.PhotoImage(image=blank_image)
-            self.tk_canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
-            
-            # Update the window
-            self.tk_root.update()
-            
-            self.display_window_created = True
-            self.using_tkinter = True
-            logging.info("Created Tkinter display window for SLM")
-        except Exception as e:
-            logging.error(f"Error creating Tkinter display window: {e}")
-            self.display_window_created = False
-            if self.tk_root:
+            # On Raspberry Pi, set the window to stay on top
+            if IS_RASPBERRY_PI:
                 try:
-                    self.tk_root.destroy()
-                except:
-                    pass
-                self.tk_root = None
-    
-    def _create_pygame_window(self):
-        """Create a window for displaying the phase mask using pygame."""
-        if not pygame_available:
-            logging.error("Pygame is not available. Cannot create pygame window.")
-            return
-            
-        try:
-            # Set SDL environment variables for display control
-            os.environ['SDL_VIDEO_WINDOW_POS'] = f'{self.display_position},0'
-            
-            # Get display info
-            num_displays = pygame.display.get_num_displays()
-            logging.info(f"Number of displays: {num_displays}")
-            
-            if num_displays < 2:
-                logging.warning("Only one display detected. Using current display.")
-                display_index = 0
-            else:
-                display_index = 1  # Use second display
-                
-            for i in range(num_displays):
-                info = pygame.display.get_desktop_sizes()[i]
-                logging.info(f"Display {i}: {info}")
-            
-            # Get the size of the target display
-            target_display_size = pygame.display.get_desktop_sizes()[display_index]
-            logging.info(f"Target display size: {target_display_size}")
-            
-            # Always use 800x600 for the SLM pattern regardless of display size
-            slm_size = (800, 600)
-            
-            # Create window on target display with proper size
-            try:
-                self.slm_window = pygame.display.set_mode(
-                    slm_size,  # Always use 800x600
-                    pygame.NOFRAME,
-                    display=display_index
-                )
-            except pygame.error:
-                # Fallback if display parameter fails
-                self.slm_window = pygame.display.set_mode(
-                    slm_size,  # Always use 800x600
-                    pygame.NOFRAME
-                )
-                # Try to move window to correct position
-                pygame.display.set_caption("SLM Pattern")
-            
-            # Create surface with proper depth for grayscale
-            self.pattern_surface = pygame.Surface(slm_size, depth=8)  # Always use 800x600
-            self.pattern_surface.set_palette([(i, i, i) for i in range(256)])
-            
-            # Start the display thread
-            self.running = True
-            self.display_thread = threading.Thread(target=self._pygame_display_thread)
-            self.display_thread.daemon = True
-            self.display_thread.start()
+                    cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+                except Exception as e:
+                    logging.warning(f"Could not set fullscreen property: {e}")
             
             self.display_window_created = True
-            self.using_tkinter = False
-            logging.info("Created pygame display window for SLM")
+            logging.info(f"Created display window: {self.window_name}")
         except Exception as e:
-            logging.error(f"Error creating pygame display window: {e}")
+            logging.error(f"Error creating display window: {e}")
             self.display_window_created = False
-    
-    def _pygame_display_thread(self):
-        """Thread for handling the pygame display."""
-        try:
-            # Force reinitialize pygame display system
-            pygame.display.quit()
-            pygame.init()
-            
-            # Get display info
-            num_displays = pygame.display.get_num_displays()
-            
-            if num_displays < 2:
-                display_index = 0
-            else:
-                display_index = 1  # Use second display
-            
-            # Get the size of the target display
-            target_display_size = pygame.display.get_desktop_sizes()[display_index]
-            logging.info(f"Target display size: {target_display_size}")
-            
-            # Always use 800x600 for the SLM pattern regardless of display size
-            slm_size = (800, 600)
-            
-            # Create window on target display with proper size
-            try:
-                self.slm_window = pygame.display.set_mode(
-                    slm_size,  # Always use 800x600
-                    pygame.NOFRAME,
-                    display=display_index
-                )
-            except pygame.error:
-                # Fallback if display parameter fails
-                self.slm_window = pygame.display.set_mode(
-                    slm_size,  # Always use 800x600
-                    pygame.NOFRAME
-                )
-                # Try to move window to correct position
-                pygame.display.set_caption("SLM Pattern")
-            
-            # Create surface with proper depth for grayscale
-            self.pattern_surface = pygame.Surface(slm_size, depth=8)  # Always use 800x600
-            self.pattern_surface.set_palette([(i, i, i) for i in range(256)])
-            
-            # Update with initial pattern
-            self._update_pygame_display()
-            
-            # Event loop
-            while self.running:
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
-                        self.running = False
-                        break
-                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                        self.running = False
-                        break
-                
-                # Small sleep to prevent high CPU usage
-                time.sleep(0.01)
-                
-        except Exception as e:
-            logging.error(f"Error in pygame display thread: {e}")
-            # Try to fall back to another display method
-            self.display_window_created = False
-            self._create_cv2_window()
-        finally:
-            # Cleanup
-            try:
-                if pygame.display.get_init():
-                    pygame.display.quit()
-                pygame.display.init()
-            except Exception as cleanup_error:
-                logging.error(f"Error during pygame cleanup: {cleanup_error}")
-    
-    def _update_pygame_display(self):
-        """Update the pygame display with the current phase mask."""
-        if not self.running or self.slm_window is None:
-            return
-            
-        try:
-            # Update surface with pattern data
-            pygame_array = pygame.surfarray.pixels2d(self.pattern_surface)
-            # Transpose if needed to match the expected shape
-            if self.phase_mask.shape[0] == 800 and self.phase_mask.shape[1] == 600:
-                # No need to transpose, shapes match
-                pygame_array[:] = self.phase_mask
-            else:
-                # Transpose to match
-                pygame_array[:] = self.phase_mask.T
-            del pygame_array  # Release the surface lock
-            
-            # Clear window and display pattern
-            self.slm_window.fill((0, 0, 0))
-            self.slm_window.blit(self.pattern_surface, (0, 0))
-            pygame.display.flip()
-        except Exception as e:
-            logging.error(f"Error updating pygame display: {e}")
-            # If pygame display fails, try to switch to another method
-            self.display_window_created = False
-            if not self.using_tkinter:
-                self._create_tkinter_window()
-                if self.display_window_created:
-                    self._update_tkinter_display()
-    
-    def _update_tkinter_display(self):
-        """Update the tkinter display with the current phase mask."""
-        if not self.using_tkinter or self.tk_root is None or self.tk_canvas is None:
-            return
-            
-        try:
-            # Convert numpy array to PIL Image
-            from PIL import Image, ImageTk
-            image = Image.fromarray(self.phase_mask)
-            
-            # Update the PhotoImage
-            self.tk_image = ImageTk.PhotoImage(image=image)
-            
-            # Update the canvas
-            self.tk_canvas.delete("all")
-            self.tk_canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
-            
-            # Update the window
-            self.tk_root.update()
-        except Exception as e:
-            logging.error(f"Error updating tkinter display: {e}")
     
     def _update_display(self):
         """Update the display window with the current phase mask."""
@@ -376,25 +120,19 @@ class SLM:
             return
             
         try:
-            if self.using_tkinter:
-                # Use tkinter for display
-                self._update_tkinter_display()
-            elif IS_RASPBERRY_PI and pygame_available and self.running:
-                # Use pygame for display on Raspberry Pi
-                self._update_pygame_display()
+            # Display the phase mask
+            cv2.imshow(self.window_name, self.phase_mask)
+            
+            # Use a longer waitKey time on Raspberry Pi
+            if IS_RASPBERRY_PI:
+                cv2.waitKey(10)  # 10ms wait for Raspberry Pi
             else:
-                # Use OpenCV for display on other platforms
-                cv2.imshow(self.window_name, self.phase_mask)
-                cv2.waitKey(1)  # Update the window (1ms wait)
+                cv2.waitKey(1)  # 1ms wait for other platforms
             
             # Account for 60Hz refresh rate (approximately 16.67ms per frame)
-            # Wait for at least one refresh cycle to ensure the display is updated
             time.sleep(0.02)  # 20ms, slightly longer than one refresh cycle at 60Hz
         except Exception as e:
             logging.error(f"Error updating display: {e}")
-            # If current display method fails, try to switch to another method
-            if not self.using_tkinter and not IS_RASPBERRY_PI:
-                self._create_tkinter_window()
     
     def apply_phase_mask(self, phase_mask: np.ndarray):
         """
@@ -518,34 +256,13 @@ class SLM:
         
     def close(self):
         """Close the SLM and any open windows."""
-        if self.using_tkinter:
-            # Close tkinter window
-            if self.tk_root:
-                try:
-                    self.tk_root.destroy()
-                    self.tk_root = None
-                except Exception as e:
-                    logging.error(f"Error closing tkinter display: {e}")
-        elif IS_RASPBERRY_PI and pygame_available:
-            # Stop the pygame display thread
-            self.running = False
-            if self.display_thread and self.display_thread.is_alive():
-                self.display_thread.join(timeout=1.0)
-                
-            # Clean up pygame
+        # Close OpenCV window
+        if self.display_window_created:
             try:
-                if pygame.display.get_init():
-                    pygame.display.quit()
+                cv2.destroyWindow(self.window_name)
+                self.display_window_created = False
             except Exception as e:
-                logging.error(f"Error closing pygame display: {e}")
-        else:
-            # Close OpenCV window
-            if self.display_window_created:
-                try:
-                    cv2.destroyWindow(self.window_name)
-                    self.display_window_created = False
-                except Exception as e:
-                    logging.error(f"Error closing display window: {e}")
+                logging.error(f"Error closing display window: {e}")
                 
         # Add any other cleanup code for the actual SLM hardware here
         self.connected = False
@@ -554,186 +271,176 @@ class SLM:
 class PowerMeter:
     def __init__(self, resource_name: Optional[str] = None):
         """
-        Initialize the Thorlabs PM100D power meter.
+        Initialize the power meter.
         
         Args:
             resource_name: VISA resource name for the power meter
-                          (if None, will attempt to find it automatically)
         """
-        self.rm = pyvisa.ResourceManager()
-        self.device = None
+        self.resource_name = resource_name
         self.connected = False
-        self.wavelength = 650.0  # Default wavelength in nm
+        self.resource_manager = None
+        self.device = None
+        self.wavelength = 1550  # Default wavelength in nm
+        self.averaging_count = 10  # Default averaging count
         
-        # Print all available resources to help with debugging
-        try:
-            resources = self.rm.list_resources()
-            logging.info(f"Available VISA resources: {resources}")
-        except Exception as e:
-            logging.error(f"Error listing resources: {e}")
+        # Connect to the power meter
+        self.connect()
         
-        # Try to connect to the PM100D
+    def connect(self):
+        """Connect to the power meter."""
         try:
-            if resource_name:
-                self.device = self.rm.open_resource(resource_name)
-                self.connected = True
-                logging.info(f"Connected to PM100D using provided resource: {resource_name}")
-            else:
-                # Try multiple resource formats in order of likelihood
-                resource_formats = [
-                    'USB0::1313::8078::INSTR',  # Format from thorlabs_power_meter.py
-                    'USB0::0x1313::0x8078::INSTR',  # Alternative format with hex
-                    'USB0::0x1313::0x8078::P0000000::INSTR',  # With serial number
-                    'USB0::0x1313::0x8078::P0005750::INSTR',  # Alternative serial
-                    'ASRL1::INSTR',  # Serial port 1
-                    'ASRL2::INSTR'   # Serial port 2
-                ]
+            # Initialize the VISA resource manager
+            self.resource_manager = pyvisa.ResourceManager()
+            
+            # If no resource name is provided, try to find the power meter
+            if self.resource_name is None:
+                resources = self.resource_manager.list_resources()
+                logging.info(f"Available resources: {resources}")
                 
-                for fmt in resource_formats:
-                    try:
-                        logging.info(f"Trying to connect with: {fmt}")
-                        self.device = self.rm.open_resource(fmt)
-                        self.connected = True
-                        logging.info(f"Connected to PM100D using: {fmt}")
-                        break
-                    except Exception as e:
-                        logging.warning(f"Failed to connect with {fmt}: {e}")
-                
-                if not self.connected:
-                    # Try to find a Thorlabs device in the available resources
-                    for resource in resources:
-                        if '1313' in resource:  # Thorlabs vendor ID
-                            try:
-                                logging.info(f"Trying to connect with found resource: {resource}")
-                                self.device = self.rm.open_resource(resource)
-                                self.connected = True
-                                logging.info(f"Connected to PM100D using: {resource}")
+                # Look for Thorlabs PM100D
+                for resource in resources:
+                    if "USB" in resource:
+                        try:
+                            device = self.resource_manager.open_resource(resource)
+                            idn = device.query("*IDN?")
+                            if "PM100" in idn:
+                                self.resource_name = resource
+                                self.device = device
+                                logging.info(f"Found power meter at {resource}: {idn}")
                                 break
-                            except Exception as e:
-                                logging.warning(f"Failed to connect with {resource}: {e}")
-        except Exception as e:
-            logging.error(f"Error connecting to device: {e}")
-    
-    def find_devices(self):
-        """Find all connected Thorlabs power meter devices"""
-        try:
-            devices = []
+                            else:
+                                device.close()
+                        except Exception as e:
+                            logging.debug(f"Error checking resource {resource}: {e}")
             
-            # Use PyVISA to find devices
-            for resource in self.rm.list_resources():
-                devices.append({
-                    'device': resource,
-                    'product_id': 0,  # Not available through PyVISA
-                    'model': "Thorlabs Power Meter",  # Will be updated after connection
-                    'serial': resource,
-                    'resource_name': resource
-                })
+            # If we have a resource name, connect to it
+            if self.resource_name is not None and self.device is None:
+                self.device = self.resource_manager.open_resource(self.resource_name)
+                idn = self.device.query("*IDN?")
+                logging.info(f"Connected to power meter: {idn}")
+            
+            # Check if we're connected
+            if self.device is not None:
+                self.connected = True
                 
-            return devices
+                # Configure the power meter
+                self.configure()
+            else:
+                logging.warning("No power meter found.")
+                
         except Exception as e:
-            logging.error(f"Error finding devices: {e}")
-            return []
-    
-    def connect(self, device_info):
-        """Connect to a specific power meter"""
-        try:
-            # Try to connect to the device
-            self.device = self.rm.open_resource(device_info['resource_name'])
-            self.connected = True
-            logging.info(f"Connected to {device_info['model']} (SN: {device_info['serial']})")
-            return True
-        except Exception as e:
-            logging.error(f"Error connecting to device: {e}")
-            return False
-    
-    def disconnect(self):
-        """Disconnect from the power meter"""
-        if self.device:
-            self.device.close()
+            logging.error(f"Error connecting to power meter: {e}")
             self.connected = False
-            logging.info("Disconnected from power meter")
     
-    def read_power(self) -> float:
-        """
-        Read the current power measurement.
-        
-        Returns:
-            Power reading in watts, or -1 if error
-        """
+    def configure(self):
+        """Configure the power meter."""
         if not self.connected:
-            logging.warning("Device not connected")
-            return -1
+            return
             
         try:
-            # Using PyVISA interface - exactly as in thorlabs_power_meter.py
-            power = self.device.query("MEAS:POW?")  # Send query to get power measurement
-            return float(power)
+            # Set the wavelength
+            self.set_wavelength(self.wavelength)
+            
+            # Set the averaging count
+            self.set_averaging(self.averaging_count)
+            
+            # Set to power measurement mode
+            self.device.write("CONF:POW")
+            
+            # Set auto-range
+            self.device.write("POW:RANG:AUTO 1")
+            
+            logging.info("Power meter configured")
+            
         except Exception as e:
-            logging.error(f"Error reading power: {e}")
-            return -1
+            logging.error(f"Error configuring power meter: {e}")
     
     def set_wavelength(self, wavelength: float):
         """
-        Set the wavelength for power correction.
+        Set the wavelength for power measurements.
         
         Args:
-            wavelength: Wavelength in nanometers
+            wavelength: Wavelength in nm
         """
         if not self.connected:
-            logging.warning("Device not connected")
-            return False
+            return
             
         try:
-            self.device.write(f"WAV {wavelength}")  # Command to set wavelength
+            # Convert to meters (PM100D uses meters)
+            wavelength_m = wavelength * 1e-9
+            
+            # Set the wavelength
+            self.device.write(f"SENS:CORR:WAV {wavelength_m}")
+            
+            # Store the wavelength
             self.wavelength = wavelength
+            
             logging.info(f"Wavelength set to {wavelength} nm")
-            return True
+            
         except Exception as e:
             logging.error(f"Error setting wavelength: {e}")
-            return False
     
     def set_averaging(self, count: int):
         """
-        Set the number of measurements to average.
+        Set the averaging count for power measurements.
         
         Args:
-            count: Number of measurements to average (1-10000)
+            count: Number of samples to average
         """
         if not self.connected:
-            logging.warning("Device not connected")
-            return False
+            return
             
         try:
-            # Try to set averaging using the standard SCPI command
+            # Set the averaging count
             self.device.write(f"SENS:AVER:COUN {count}")
-            logging.info(f"Averaging set to {count}")
-            return True
+            
+            # Enable averaging
+            self.device.write("SENS:AVER:STAT 1")
+            
+            # Store the averaging count
+            self.averaging_count = count
+            
+            logging.info(f"Averaging count set to {count}")
+            
         except Exception as e:
-            logging.warning(f"Error setting averaging: {e}")
-            # If the command fails, just log a warning but don't fail
-            return False
+            logging.error(f"Error setting averaging: {e}")
     
-    def set_auto_range(self, enabled: bool = True):
+    def get_power(self) -> float:
         """
-        Enable or disable auto-ranging.
+        Get the current power reading.
         
-        Args:
-            enabled: True to enable auto-ranging, False to disable
+        Returns:
+            Power in watts
         """
         if not self.connected:
-            logging.warning("Device not connected")
-            return False
+            # Return a random value in simulation mode
+            return random.uniform(0.0, 1.0) * 1e-3
             
         try:
-            # Try to set auto-range using the standard SCPI command
-            self.device.write(f"SENS:POW:DC:RANG:AUTO {1 if enabled else 0}")
-            logging.info(f"Auto-range set to {enabled}")
-            return True
+            # Read the power
+            power = float(self.device.query("MEAS:POW?"))
+            
+            return power
+            
         except Exception as e:
-            logging.warning(f"Error setting auto-range: {e}")
-            # If the command fails, just log a warning but don't fail
-            return False
-
+            logging.error(f"Error reading power: {e}")
+            
+            # Try to reconnect
+            self.connect()
+            
+            # Return 0 on error
+            return 0.0
+    
+    def close(self):
+        """Close the connection to the power meter."""
+        if self.connected:
+            try:
+                self.device.close()
+                logging.info("Power meter connection closed")
+            except Exception as e:
+                logging.error(f"Error closing power meter connection: {e}")
+            
+            self.connected = False
 
 class SimulatedAnnealing:
     def __init__(self, 
@@ -781,7 +488,7 @@ class SimulatedAnnealing:
         Returns:
             Power reading in watts
         """
-        power = self.power_meter.read_power()
+        power = self.power_meter.get_power()
         return power
     
     def stop(self):
