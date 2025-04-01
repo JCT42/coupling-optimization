@@ -52,11 +52,14 @@ class SLM:
                 self.connected = True
                 logging.info("SLM initialized in simulation mode")
                 
-                # Create a window for displaying the phase mask without UI elements
+                # Create a window for displaying the phase mask
                 cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-                cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
                 cv2.moveWindow(self.window_name, self.display_position, 0)
+                cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
+                
+                # Remove window decorations but don't use fullscreen to maintain exact dimensions
+                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_AUTOSIZE, cv2.WINDOW_AUTOSIZE)
+                
                 self.display_window_created = True
                 
                 # Display initial blank phase mask
@@ -70,11 +73,14 @@ class SLM:
             self.connected = True
             logging.info("SLM initialized successfully")
             
-            # Create a window for displaying the phase mask without UI elements
+            # Create a window for displaying the phase mask
             cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-            cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-            cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
             cv2.moveWindow(self.window_name, self.display_position, 0)
+            cv2.resizeWindow(self.window_name, self.resolution[0], self.resolution[1])
+            
+            # Remove window decorations but don't use fullscreen to maintain exact dimensions
+            cv2.setWindowProperty(self.window_name, cv2.WND_PROP_AUTOSIZE, cv2.WINDOW_AUTOSIZE)
+            
             self.display_window_created = True
             
             # Display initial blank phase mask
@@ -90,11 +96,13 @@ class SLM:
             return
             
         try:
-            # Display the phase mask - ensure it fills the entire window
-            display_image = self.phase_mask.copy()
+            # Make sure the phase mask has the correct dimensions
+            if self.phase_mask.shape != self.resolution:
+                logging.warning(f"Phase mask shape {self.phase_mask.shape} doesn't match resolution {self.resolution}. Resizing.")
+                self.phase_mask = self.resize_mask(self.phase_mask)
             
             # Display the phase mask
-            cv2.imshow(self.window_name, display_image)
+            cv2.imshow(self.window_name, self.phase_mask)
             cv2.waitKey(1)  # Update the window (1ms wait)
             
             # Account for 60Hz refresh rate (approximately 16.67ms per frame)
