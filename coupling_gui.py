@@ -43,6 +43,11 @@ class CouplingOptimizerGUI:
         self.wavelength = tk.DoubleVar(value=1550)
         self.averaging_count = tk.IntVar(value=10)
         
+        # Variables for power meter filter
+        self.filter_enabled = tk.BooleanVar(value=True)
+        self.filter_window_size = tk.IntVar(value=5)
+        self.filter_alpha = tk.DoubleVar(value=0.2)
+        
         # Variables for status
         self.current_power = tk.DoubleVar(value=0.0)
         self.best_power = tk.DoubleVar(value=0.0)
@@ -238,6 +243,35 @@ class CouplingOptimizerGUI:
         ttk.Label(avg_frame, text="Averaging Count:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
         ttk.Entry(avg_frame, textvariable=self.averaging_count, width=10).grid(row=0, column=1, padx=5, pady=2)
         ttk.Scale(avg_frame, from_=1, to=100, variable=self.averaging_count, 
+                 orient=tk.HORIZONTAL).grid(row=0, column=2, sticky=(tk.W, tk.E), padx=5, pady=2)
+        
+        # Low-Pass Filter Parameters
+        filter_frame = ttk.LabelFrame(pm_frame, text="Low-Pass Filter")
+        filter_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Filter Enable/Disable
+        filter_enable_frame = ttk.Frame(filter_frame)
+        filter_enable_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Checkbutton(filter_enable_frame, text="Enable Filter", 
+                       variable=self.filter_enabled).pack(anchor=tk.W, padx=5, pady=2)
+        
+        # Filter Window Size
+        window_frame = ttk.Frame(filter_frame)
+        window_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(window_frame, text="Window Size:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
+        ttk.Entry(window_frame, textvariable=self.filter_window_size, width=10).grid(row=0, column=1, padx=5, pady=2)
+        ttk.Scale(window_frame, from_=1, to=20, variable=self.filter_window_size, 
+                 orient=tk.HORIZONTAL).grid(row=0, column=2, sticky=(tk.W, tk.E), padx=5, pady=2)
+        
+        # Filter Alpha (for exponential filter)
+        alpha_frame = ttk.Frame(filter_frame)
+        alpha_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(alpha_frame, text="Filter Alpha:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
+        ttk.Entry(alpha_frame, textvariable=self.filter_alpha, width=10).grid(row=0, column=1, padx=5, pady=2)
+        ttk.Scale(alpha_frame, from_=0.01, to=1.0, variable=self.filter_alpha, 
                  orient=tk.HORIZONTAL).grid(row=0, column=2, sticky=(tk.W, tk.E), padx=5, pady=2)
         
         # Apply Parameters button
@@ -477,6 +511,14 @@ class CouplingOptimizerGUI:
             self.optimizer.power_meter.set_wavelength(self.wavelength.get())
             self.optimizer.power_meter.set_averaging(self.averaging_count.get())
             
+            # Update filter parameters if the method exists
+            if hasattr(self.optimizer.power_meter, 'set_filter_params'):
+                self.optimizer.power_meter.set_filter_params(
+                    enabled=self.filter_enabled.get(),
+                    window_size=self.filter_window_size.get(),
+                    alpha=self.filter_alpha.get()
+                )
+            
         logging.info("Parameters applied")
         
     def save_configuration(self):
@@ -488,7 +530,10 @@ class CouplingOptimizerGUI:
             'min_temperature': self.min_temperature.get(),
             'perturbation_scale': self.perturbation_scale.get(),
             'wavelength': self.wavelength.get(),
-            'averaging_count': self.averaging_count.get()
+            'averaging_count': self.averaging_count.get(),
+            'filter_enabled': self.filter_enabled.get(),
+            'filter_window_size': self.filter_window_size.get(),
+            'filter_alpha': self.filter_alpha.get()
         }
         
         try:
@@ -509,6 +554,9 @@ class CouplingOptimizerGUI:
             self.perturbation_scale.set(config.get('perturbation_scale', 0.1))
             self.wavelength.set(config.get('wavelength', 650))
             self.averaging_count.set(config.get('averaging_count', 10))
+            self.filter_enabled.set(config.get('filter_enabled', True))
+            self.filter_window_size.set(config.get('filter_window_size', 5))
+            self.filter_alpha.set(config.get('filter_alpha', 0.2))
             
             logging.info("Configuration loaded from coupling_config.npy")
         except Exception as e:

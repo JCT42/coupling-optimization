@@ -59,6 +59,13 @@ class ThorlabsPowerMeter:
         self.endpoint_in = 0x81
         self.endpoint_out = 0x01
         
+        # Low-pass filter parameters
+        self.filter_enabled = True
+        self.filter_window_size = 5  # Number of samples to average
+        self.filter_buffer = []  # Buffer for recent power readings
+        self.filter_alpha = 0.2  # Alpha for exponential moving average (alternative filter)
+        self.last_filtered_value = None  # Last filtered value for exponential filter
+        
         # Try to connect to the PM100D
         try:
             self.device = self.rm.open_resource('USB0::1313::8078::INSTR')  # Update the address as necessary
@@ -157,10 +164,60 @@ class ThorlabsPowerMeter:
         
         try:
             power = self.device.query("MEAS:POW?")  # Send query to get power measurement
-            return float(power)
+            power_value = float(power)
+            
+            # Apply low-pass filtering if enabled
+            if self.filter_enabled:
+                power_value = self._apply_filter(power_value)
+                
+            return power_value
         except Exception as e:
             print(f"Error reading power: {e}")
             return None
+    
+    def _apply_filter(self, power_value):
+        """
+        Apply a low-pass filter to the power reading.
+        
+        Args:
+            power_value: The raw power reading
+            
+        Returns:
+            Filtered power value
+        """
+        # Moving average filter
+        self.filter_buffer.append(power_value)
+        
+        # Keep buffer at the specified window size
+        if len(self.filter_buffer) > self.filter_window_size:
+            self.filter_buffer.pop(0)
+        
+        # Calculate the average
+        filtered_value = sum(self.filter_buffer) / len(self.filter_buffer)
+        
+        return filtered_value
+    
+    def set_filter_params(self, enabled=True, window_size=5, alpha=0.2):
+        """
+        Set the parameters for the low-pass filter.
+        
+        Args:
+            enabled: Whether to enable filtering
+            window_size: Number of samples to use in the moving average
+            alpha: Weight for the exponential moving average (0-1)
+                  Lower values give more weight to past readings (smoother)
+        """
+        self.filter_enabled = enabled
+        
+        # Update window size if changed
+        if window_size != self.filter_window_size:
+            self.filter_window_size = max(1, window_size)  # Ensure at least 1
+            self.filter_buffer = self.filter_buffer[-self.filter_window_size:] if self.filter_buffer else []
+        
+        # Update alpha for exponential filter
+        self.filter_alpha = max(0.0, min(1.0, alpha))  # Clamp between 0 and 1
+        
+        print(f"Power meter filter: enabled={enabled}, window_size={window_size}, alpha={alpha}")
     
     def set_wavelength(self, wavelength):
         """Set the wavelength in nm"""
@@ -434,6 +491,11 @@ class PowerMeterGUI:
         self.relative_power_var = tk.StringVar(value="-- %")
         self.notes_var = tk.StringVar(value="")
         
+        # Filter variables
+        self.filter_enabled_var = tk.BooleanVar(value=True)
+        self.filter_window_size_var = tk.IntVar(value=5)
+        self.filter_alpha_var = tk.DoubleVar(value=0.2)
+        
         # Variables for uncertainty factors
         self.uncertainty_vars = {
             'calibration': tk.DoubleVar(value=1.0),
@@ -451,7 +513,7 @@ class PowerMeterGUI:
         self.create_widgets()
         self.animation = None
         self.devices = []
-        
+    
     def create_widgets(self):
         """Create GUI widgets"""
         # Create a notebook (tabbed interface)
@@ -602,29 +664,64 @@ class PowerMeterGUI:
     
     def setup_scientific_tab(self, parent):
         """Setup the scientific tab with reference beam and stability analysis"""
+        # Filter frame
+        filter_frame = ttk.LabelFrame(parent, text="Low-Pass Filter")
+        filter_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Filter controls
+        filter_controls = ttk.Frame(filter_frame)
+        filter_controls.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Enable/disable filter
+        ttk.Checkbutton(filter_controls, text="Enable Filter", variable=self.filter_enabled_var).grid(
+            row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        
+        # Window size
+        ttk.Label(filter_controls, text="Window Size:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        window_size_entry = ttk.Entry(filter_controls, textvariable=self.filter_window_size_var, width=5)
+        window_size_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        window_size_scale = ttk.Scale(filter_controls, from_=1, to=20, 
+                                     variable=self.filter_window_size_var, orient=tk.HORIZONTAL)
+        window_size_scale.grid(row=1, column=2, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        # Alpha value (for exponential filter)
+        ttk.Label(filter_controls, text="Alpha:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+        alpha_entry = ttk.Entry(filter_controls, textvariable=self.filter_alpha_var, width=5)
+        alpha_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        alpha_scale = ttk.Scale(filter_controls, from_=0.01, to=1.0, 
+                               variable=self.filter_alpha_var, orient=tk.HORIZONTAL)
+        alpha_scale.grid(row=2, column=2, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        # Apply filter button
+        self.apply_filter_btn = ttk.Button(filter_controls, text="Apply Filter Settings", 
+                                          command=self.update_filter_settings)
+        self.apply_filter_btn.grid(row=3, column=0, columnspan=3, padx=5, pady=5)
+        
         # Reference beam frame
-        ref_frame = ttk.LabelFrame(parent, text="Reference Beam Comparison")
-        ref_frame.pack(fill=tk.X, padx=5, pady=5)
+        reference_frame = ttk.LabelFrame(parent, text="Reference Beam")
+        reference_frame.pack(fill=tk.X, padx=5, pady=5)
         
         # Reference controls
-        ref_controls = ttk.Frame(ref_frame)
-        ref_controls.pack(fill=tk.X, padx=5, pady=5)
+        reference_controls = ttk.Frame(reference_frame)
+        reference_controls.pack(fill=tk.X, padx=5, pady=5)
         
-        ttk.Label(ref_controls, text="Reference Power:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
-        ttk.Label(ref_controls, textvariable=self.ref_power_var).grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+        ttk.Label(reference_controls, text="Reference Power:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        ttk.Label(reference_controls, textvariable=self.ref_power_var).grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
         
-        ttk.Label(ref_controls, text="Relative Power:").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
-        ttk.Label(ref_controls, textvariable=self.relative_power_var).grid(row=0, column=3, padx=5, pady=5, sticky=tk.W)
+        ttk.Label(reference_controls, text="Relative Power:").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+        ttk.Label(reference_controls, textvariable=self.relative_power_var).grid(row=0, column=3, padx=5, pady=5, sticky=tk.W)
         
         # Reference buttons
-        ref_buttons = ttk.Frame(ref_frame)
-        ref_buttons.pack(fill=tk.X, padx=5, pady=5)
+        reference_buttons = ttk.Frame(reference_frame)
+        reference_buttons.pack(fill=tk.X, padx=5, pady=5)
         
-        self.set_ref_btn = ttk.Button(ref_buttons, text="Set Current as Reference", 
+        self.set_ref_btn = ttk.Button(reference_buttons, text="Set Current as Reference", 
                                      command=self.set_reference)
         self.set_ref_btn.grid(row=0, column=0, padx=5, pady=5)
         
-        self.clear_ref_btn = ttk.Button(ref_buttons, text="Clear Reference", 
+        self.clear_ref_btn = ttk.Button(reference_buttons, text="Clear Reference", 
                                        command=self.clear_reference)
         self.clear_ref_btn.grid(row=0, column=1, padx=5, pady=5)
         
@@ -742,6 +839,7 @@ class PowerMeterGUI:
         self.clear_ref_btn.config(state=state)
         self.analyze_stability_btn.config(state=state)
         self.update_uncertainty_btn.config(state=state)
+        self.apply_filter_btn.config(state=state)
     
     def set_wavelength(self):
         """Set the wavelength on the power meter"""
@@ -1069,6 +1167,19 @@ class PowerMeterGUI:
                 
         except Exception as e:
             self.status_var.set(f"Error updating uncertainty factors: {e}")
+    
+    def update_filter_settings(self):
+        """Update the low-pass filter settings"""
+        if not self.power_meter.connected:
+            self.status_var.set("Device not connected")
+            return
+            
+        enabled = self.filter_enabled_var.get()
+        window_size = self.filter_window_size_var.get()
+        alpha = self.filter_alpha_var.get()
+        
+        self.power_meter.set_filter_params(enabled=enabled, window_size=window_size, alpha=alpha)
+        self.status_var.set(f"Filter settings updated: enabled={enabled}, window_size={window_size}, alpha={alpha:.2f}")
 
 
 if __name__ == "__main__":
