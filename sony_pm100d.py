@@ -88,8 +88,16 @@ class SLM:
             return
             
         try:
+            # Make sure the phase mask is properly formatted for display
+            # OpenCV expects a valid image format, ensure it's the right type and range
+            display_image = self.phase_mask.copy()
+            
+            # Ensure the image is in the correct format for display
+            if display_image.dtype != np.uint8:
+                display_image = display_image.astype(np.uint8)
+            
             # Display the phase mask
-            cv2.imshow(self.window_name, self.phase_mask)
+            cv2.imshow(self.window_name, display_image)
             cv2.waitKey(1)  # Update the window (1ms wait)
             
             # Account for 60Hz refresh rate (approximately 16.67ms per frame)
@@ -97,6 +105,7 @@ class SLM:
             time.sleep(0.02)  # 20ms, slightly longer than one refresh cycle at 60Hz
         except Exception as e:
             logging.error(f"Error updating display: {e}")
+            logging.error(f"Phase mask shape: {self.phase_mask.shape}, dtype: {self.phase_mask.dtype}")
     
     def apply_phase_mask(self, phase_mask: np.ndarray):
         """
