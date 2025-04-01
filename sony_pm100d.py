@@ -54,7 +54,7 @@ class SLM:
         """
         # Always use 800x600 for the SLM
         self.resolution = (800, 600)
-        self.phase_mask = np.zeros((800, 600), dtype=np.uint8)  # height x width
+        self.phase_mask = np.zeros((800, 600), dtype=np.uint8)  # width x height
         self.connected = False
         self.simulation_mode = simulation_mode
         self.display_position = display_position
@@ -146,19 +146,38 @@ class SLM:
             
             # Create window on target display with proper size
             try:
+                # First try with hardware acceleration disabled
+                os.environ['SDL_VIDEODRIVER'] = 'software'
                 self.slm_window = pygame.display.set_mode(
                     slm_size,  # Always use 800x600
                     pygame.NOFRAME,
                     display=display_index
                 )
-            except pygame.error:
-                # Fallback if display parameter fails
-                self.slm_window = pygame.display.set_mode(
-                    slm_size,  # Always use 800x600
-                    pygame.NOFRAME
-                )
-                # Try to move window to correct position
-                pygame.display.set_caption("SLM Pattern")
+            except pygame.error as e:
+                logging.warning(f"Failed to create pygame window with software driver: {e}")
+                try:
+                    # Try default driver
+                    os.environ.pop('SDL_VIDEODRIVER', None)
+                    self.slm_window = pygame.display.set_mode(
+                        slm_size,  # Always use 800x600
+                        pygame.NOFRAME,
+                        display=display_index
+                    )
+                except pygame.error as e:
+                    logging.warning(f"Failed to create pygame window with display parameter: {e}")
+                    try:
+                        # Fallback if display parameter fails
+                        self.slm_window = pygame.display.set_mode(
+                            slm_size,  # Always use 800x600
+                            pygame.NOFRAME
+                        )
+                        # Try to move window to correct position
+                        pygame.display.set_caption("SLM Pattern")
+                    except pygame.error as e:
+                        logging.error(f"Failed to create pygame window: {e}")
+                        # Fall back to OpenCV if pygame fails completely
+                        self._create_cv2_window()
+                        return
             
             # Create surface with proper depth for grayscale
             self.pattern_surface = pygame.Surface(slm_size, depth=8)  # Always use 800x600
@@ -200,19 +219,38 @@ class SLM:
             
             # Create window on target display with proper size
             try:
+                # First try with hardware acceleration disabled
+                os.environ['SDL_VIDEODRIVER'] = 'software'
                 self.slm_window = pygame.display.set_mode(
                     slm_size,  # Always use 800x600
                     pygame.NOFRAME,
                     display=display_index
                 )
-            except pygame.error:
-                # Fallback if display parameter fails
-                self.slm_window = pygame.display.set_mode(
-                    slm_size,  # Always use 800x600
-                    pygame.NOFRAME
-                )
-                # Try to move window to correct position
-                pygame.display.set_caption("SLM Pattern")
+            except pygame.error as e:
+                logging.warning(f"Failed to create pygame window with software driver: {e}")
+                try:
+                    # Try default driver
+                    os.environ.pop('SDL_VIDEODRIVER', None)
+                    self.slm_window = pygame.display.set_mode(
+                        slm_size,  # Always use 800x600
+                        pygame.NOFRAME,
+                        display=display_index
+                    )
+                except pygame.error as e:
+                    logging.warning(f"Failed to create pygame window with display parameter: {e}")
+                    try:
+                        # Fallback if display parameter fails
+                        self.slm_window = pygame.display.set_mode(
+                            slm_size,  # Always use 800x600
+                            pygame.NOFRAME
+                        )
+                        # Try to move window to correct position
+                        pygame.display.set_caption("SLM Pattern")
+                    except pygame.error as e:
+                        logging.error(f"Failed to create pygame window: {e}")
+                        # Fall back to OpenCV if pygame fails completely
+                        self._create_cv2_window()
+                        return
             
             # Create surface with proper depth for grayscale
             self.pattern_surface = pygame.Surface(slm_size, depth=8)  # Always use 800x600
@@ -236,6 +274,8 @@ class SLM:
                 
         except Exception as e:
             logging.error(f"Error in pygame display thread: {e}")
+            # Fall back to OpenCV if pygame fails
+            self._create_cv2_window()
         finally:
             # Cleanup
             try:
@@ -251,8 +291,18 @@ class SLM:
             return
             
         try:
-            # Update surface with pattern data
+            # Update surface with pattern data - ensure correct shape handling
+            # The phase_mask should be (800, 600) and we need to transpose it for pygame
             pygame_array = pygame.surfarray.pixels2d(self.pattern_surface)
+            
+            # Make sure shapes are compatible
+            if pygame_array.shape != (800, 600) or self.phase_mask.shape != (800, 600):
+                logging.warning(f"Shape mismatch: pygame_array={pygame_array.shape}, phase_mask={self.phase_mask.shape}")
+                # Resize phase_mask if needed
+                if self.phase_mask.shape != (800, 600):
+                    self.phase_mask = cv2.resize(self.phase_mask, (800, 600), interpolation=cv2.INTER_LINEAR)
+            
+            # Copy data with explicit shape handling
             pygame_array[:] = self.phase_mask.T
             del pygame_array  # Release the surface lock
             
@@ -260,6 +310,14 @@ class SLM:
             self.slm_window.fill((0, 0, 0))
             self.slm_window.blit(self.pattern_surface, (0, 0))
             pygame.display.flip()
+        except pygame.error as e:
+            logging.error(f"Pygame error updating display: {e}")
+            # Try to reinitialize pygame if there was an error
+            try:
+                pygame.display.quit()
+                pygame.display.init()
+            except:
+                pass
         except Exception as e:
             logging.error(f"Error updating pygame display: {e}")
     
@@ -272,7 +330,12 @@ class SLM:
         try:
             if IS_RASPBERRY_PI:
                 # Use pygame for display on Raspberry Pi
-                self._update_pygame_display()
+                if hasattr(self, 'slm_window') and self.slm_window is not None:
+                    self._update_pygame_display()
+                else:
+                    # Fall back to OpenCV if pygame window creation failed
+                    cv2.imshow(self.window_name, self.phase_mask)
+                    cv2.waitKey(1)  # Update the window (1ms wait)
             else:
                 # Use OpenCV for display on other platforms
                 cv2.imshow(self.window_name, self.phase_mask)
@@ -296,8 +359,8 @@ class SLM:
             return False
             
         # Ensure the phase mask has the correct dimensions (800x600)
-        if phase_mask.shape != (600, 800):  # Note: height x width
-            logging.info(f"Resizing phase mask from {phase_mask.shape} to (600, 800)")
+        if phase_mask.shape != (800, 600):  # width x height
+            logging.info(f"Resizing phase mask from {phase_mask.shape} to (800, 600)")
             phase_mask = cv2.resize(phase_mask, (800, 600), interpolation=cv2.INTER_LINEAR)
             
         self.phase_mask = phase_mask
