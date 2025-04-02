@@ -40,7 +40,7 @@ class CouplingOptimizerGUI:
         self.iterations_per_temp = tk.IntVar(value=10)
         self.min_temperature = tk.DoubleVar(value=0.1)
         self.perturbation_scale = tk.DoubleVar(value=0.1)
-        self.wavelength = tk.DoubleVar(value=1550)
+        self.wavelength = tk.DoubleVar(value=650)
         self.averaging_count = tk.IntVar(value=10)
         
         # Variables for power meter filter
