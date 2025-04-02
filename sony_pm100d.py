@@ -27,7 +27,7 @@ except ImportError:
 # For SLM control - assuming a basic interface
 # You may need to modify this based on your specific SLM model
 class SLM:
-    def __init__(self, resolution: Tuple[int, int] = (800, 600), simulation_mode: bool = False, display_position: int = 1280):
+    def __init__(self, resolution: Tuple[int, int] = (800, 600), simulation_mode: bool = False, display_position: int = 1920):
         """
         Initialize the SLM with given resolution.
         
@@ -751,7 +751,7 @@ def main():
     logging.info("Starting coupling optimization")
     
     # Initialize the SLM
-    slm = SLM(resolution=(800, 600), simulation_mode=False, display_position=1280)  # Adjust resolution to match your SLM
+    slm = SLM(resolution=(800, 600), simulation_mode=False, display_position=1920)  # Adjust resolution to match your SLM
     
     if not slm.connected:
         logging.error("Failed to connect to SLM. Exiting.")
